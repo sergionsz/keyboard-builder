@@ -24,3 +24,14 @@ export const drag = writable<DragState | null>(null);
 
 /** Set of currently selected key IDs */
 export const selection = writable<Set<string>>(new Set());
+
+/** Rotation handle drag state */
+export interface RotateState {
+  keyId: string;
+  /** Angle (degrees) from key center to mouse at grab start */
+  startAngle: number;
+  /** Key's rotation at grab start */
+  startRotation: number;
+}
+
+export const rotating = writable<RotateState | null>(null);

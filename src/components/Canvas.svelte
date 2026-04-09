@@ -1,9 +1,10 @@
 <script lang="ts">
-  import { layout, moveKey, moveKeys } from '../stores/layout';
-  import { pan, zoom, spaceHeld, drag, gridSnap, selection } from '../stores/editor';
+  import { layout, moveKey, moveKeys, updateKeys } from '../stores/layout';
+  import { pan, zoom, spaceHeld, drag, gridSnap, selection, rotating } from '../stores/editor';
   import { SCALE, screenToCanvas, canvasPxToU } from '../lib/coords';
-  import { snapToGrid } from '../lib/snap';
+  import { snapToGrid, snapAngle } from '../lib/snap';
   import KeyShape from './KeyShape.svelte';
+  import SelectionHandles from './SelectionHandles.svelte';
 
   let svgEl: SVGSVGElement;
 
@@ -76,6 +77,29 @@
     svgEl.setPointerCapture(e.pointerId);
   }
 
+  // --- Rotation handle start ---
+  function onRotateStart(keyId: string, e: PointerEvent) {
+    const key = $layout.keys.find((k) => k.id === keyId);
+    if (!key) return;
+
+    const screenPt = eventToSvgScreen(e);
+    const canvasPt = screenToCanvas(screenPt, $pan, $zoom);
+
+    // Key center in canvas px
+    const kcx = (key.x + key.width / 2) * SCALE;
+    const kcy = (key.y + key.height / 2) * SCALE;
+
+    const startAngle = Math.atan2(canvasPt.y - kcy, canvasPt.x - kcx) * (180 / Math.PI);
+
+    rotating.set({
+      keyId,
+      startAngle,
+      startRotation: key.rotation,
+    });
+
+    svgEl.setPointerCapture(e.pointerId);
+  }
+
   // --- Pointer events ---
   function onPointerDown(e: PointerEvent) {
     // Middle mouse button OR space+left-click → start pan
@@ -99,6 +123,45 @@
       const dx = e.clientX - panStart.x;
       const dy = e.clientY - panStart.y;
       pan.set({ x: panOrigin.x + dx, y: panOrigin.y + dy });
+      return;
+    }
+
+    // Rotation handle drag
+    const rotState = $rotating;
+    if (rotState) {
+      const key = $layout.keys.find((k) => k.id === rotState.keyId);
+      if (!key) return;
+
+      const screenPt = eventToSvgScreen(e);
+      const canvasPt = screenToCanvas(screenPt, $pan, $zoom);
+
+      const kcx = (key.x + key.width / 2) * SCALE;
+      const kcy = (key.y + key.height / 2) * SCALE;
+
+      const currentAngle = Math.atan2(canvasPt.y - kcy, canvasPt.x - kcx) * (180 / Math.PI);
+      let newRotation = rotState.startRotation + (currentAngle - rotState.startAngle);
+
+      if (e.shiftKey) {
+        newRotation = snapAngle(newRotation, 15);
+      }
+
+      // Normalize to -180..180
+      newRotation = ((newRotation + 180) % 360 + 360) % 360 - 180;
+
+      const sel = $selection;
+      if (sel.size > 1 && sel.has(rotState.keyId)) {
+        const delta = newRotation - key.rotation;
+        if (delta !== 0) {
+          for (const id of sel) {
+            const k = $layout.keys.find((kk) => kk.id === id);
+            if (k) {
+              updateKeys(new Set([id]), { rotation: k.rotation + delta });
+            }
+          }
+        }
+      } else {
+        updateKeys(new Set([rotState.keyId]), { rotation: newRotation });
+      }
       return;
     }
 
@@ -136,6 +199,12 @@
   function onPointerUp(e: PointerEvent) {
     if (isPanning) {
       isPanning = false;
+      svgEl.releasePointerCapture(e.pointerId);
+      return;
+    }
+
+    if ($rotating) {
+      rotating.set(null);
       svgEl.releasePointerCapture(e.pointerId);
       return;
     }
@@ -198,6 +267,7 @@
   class="canvas"
   class:panning={isPanning || $spaceHeld}
   class:dragging={$drag !== null}
+  class:rotating={$rotating !== null}
   xmlns="http://www.w3.org/2000/svg"
   onpointerdown={onPointerDown}
   onpointermove={onPointerMove}
@@ -227,6 +297,10 @@
     {#each $layout.keys as key (key.id)}
       <KeyShape {key} selected={$selection.has(key.id)} onDragStart={onKeyDragStart} />
     {/each}
+    <!-- Rotation handle for selected keys -->
+    {#each $layout.keys.filter((k) => $selection.has(k.id)) as key (key.id)}
+      <SelectionHandles {key} {onRotateStart} />
+    {/each}
   </g>
 </svg>
 
@@ -245,5 +319,9 @@
 
   .canvas.dragging {
     cursor: move;
+  }
+
+  .canvas.rotating {
+    cursor: grabbing;
   }
 </style>
