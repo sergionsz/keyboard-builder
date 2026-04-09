@@ -1,5 +1,5 @@
 import { writable } from 'svelte/store';
-import type { Layout } from '../types';
+import type { Key, Layout } from '../types';
 import { uuid } from '../lib/uuid';
 
 /** Sample layout: a basic 60% first row to demonstrate rendering */
@@ -94,5 +94,13 @@ export function moveKeys(keyIds: Set<string>, dx: number, dy: number) {
     keys: l.keys.map((k) =>
       keyIds.has(k.id) ? { ...k, x: k.x + dx, y: k.y + dy } : k
     ),
+  }));
+}
+
+/** Update a partial set of fields on all keys matching the given IDs */
+export function updateKeys(keyIds: Set<string>, patch: Partial<Omit<Key, 'id'>>) {
+  layout.update((l) => ({
+    ...l,
+    keys: l.keys.map((k) => (keyIds.has(k.id) ? { ...k, ...patch } : k)),
   }));
 }

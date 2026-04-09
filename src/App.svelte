@@ -1,5 +1,6 @@
 <script lang="ts">
   import Canvas from './components/Canvas.svelte';
+  import PropertiesPanel from './components/PropertiesPanel.svelte';
 </script>
 
 <main>
@@ -9,6 +10,7 @@
   </header>
   <div class="editor">
     <Canvas />
+    <PropertiesPanel />
   </div>
 </main>
 
@@ -59,5 +61,6 @@
   .editor {
     flex: 1;
     overflow: hidden;
+    display: flex;
   }
 </style>
