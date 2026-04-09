@@ -1,9 +1,13 @@
 <script lang="ts">
   import type { Key } from '../types';
   import { SCALE } from '../lib/coords';
+
   const GAP = 2;    // px gap between key border and edge of cell
 
-  let { key }: { key: Key } = $props();
+  let { key, onDragStart }: {
+    key: Key;
+    onDragStart?: (keyId: string, e: PointerEvent) => void;
+  } = $props();
 
   let cx = $derived(key.x * SCALE);
   let cy = $derived(key.y * SCALE);
@@ -11,9 +15,20 @@
   let h = $derived(key.height * SCALE);
   let centerX = $derived(cx + w / 2);
   let centerY = $derived(cy + h / 2);
+
+  function handlePointerDown(e: PointerEvent) {
+    if (e.button !== 0) return; // left click only
+    e.stopPropagation();
+    onDragStart?.(key.id, e);
+  }
 </script>
 
-<g transform="rotate({key.rotation}, {centerX}, {centerY})">
+<!-- svelte-ignore a11y_no_static_element_interactions -->
+<g
+  transform="rotate({key.rotation}, {centerX}, {centerY})"
+  class="key-group"
+  onpointerdown={handlePointerDown}
+>
   <!-- Key outer border -->
   <rect
     x={cx + GAP}
@@ -45,6 +60,10 @@
 </g>
 
 <style>
+  .key-group {
+    cursor: move;
+  }
+
   .key-border {
     fill: #c8c8c8;
     stroke: #999;

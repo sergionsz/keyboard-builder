@@ -78,3 +78,11 @@ function createSampleLayout(): Layout {
 }
 
 export const layout = writable<Layout>(createSampleLayout());
+
+/** Move a key to a new absolute position (in U) */
+export function moveKey(keyId: string, x: number, y: number) {
+  layout.update((l) => ({
+    ...l,
+    keys: l.keys.map((k) => (k.id === keyId ? { ...k, x, y } : k)),
+  }));
+}

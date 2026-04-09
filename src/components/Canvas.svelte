@@ -1,7 +1,8 @@
 <script lang="ts">
-  import { layout } from '../stores/layout';
-  import { pan, zoom, spaceHeld } from '../stores/editor';
-  import { SCALE } from '../lib/coords';
+  import { layout, moveKey } from '../stores/layout';
+  import { pan, zoom, spaceHeld, drag, gridSnap } from '../stores/editor';
+  import { SCALE, screenToCanvas, canvasPxToU } from '../lib/coords';
+  import { snapToGrid } from '../lib/snap';
   import KeyShape from './KeyShape.svelte';
 
   let svgEl: SVGSVGElement;
@@ -11,6 +12,32 @@
   let panStart = $state({ x: 0, y: 0 });
   let panOrigin = $state({ x: 0, y: 0 });
 
+  /** Convert a PointerEvent to SVG-relative screen coords */
+  function eventToSvgScreen(e: PointerEvent): { x: number; y: number } {
+    const rect = svgEl.getBoundingClientRect();
+    return { x: e.clientX - rect.left, y: e.clientY - rect.top };
+  }
+
+  // --- Key drag start (called from KeyShape) ---
+  function onKeyDragStart(keyId: string, e: PointerEvent) {
+    if ($spaceHeld) return; // space is for panning, not dragging keys
+    const screenPt = eventToSvgScreen(e);
+    const canvasPt = screenToCanvas(screenPt, $pan, $zoom);
+    const mousePosU = canvasPxToU(canvasPt);
+
+    const key = $layout.keys.find((k) => k.id === keyId);
+    if (!key) return;
+
+    drag.set({
+      keyId,
+      offsetU: { x: mousePosU.x - key.x, y: mousePosU.y - key.y },
+      startU: { x: key.x, y: key.y },
+    });
+
+    svgEl.setPointerCapture(e.pointerId);
+  }
+
+  // --- Pointer events ---
   function onPointerDown(e: PointerEvent) {
     // Middle mouse button OR space+left-click → start pan
     if (e.button === 1 || (e.button === 0 && $spaceHeld)) {
@@ -23,15 +50,41 @@
   }
 
   function onPointerMove(e: PointerEvent) {
-    if (!isPanning) return;
-    const dx = e.clientX - panStart.x;
-    const dy = e.clientY - panStart.y;
-    pan.set({ x: panOrigin.x + dx, y: panOrigin.y + dy });
+    if (isPanning) {
+      const dx = e.clientX - panStart.x;
+      const dy = e.clientY - panStart.y;
+      pan.set({ x: panOrigin.x + dx, y: panOrigin.y + dy });
+      return;
+    }
+
+    const dragState = $drag;
+    if (dragState) {
+      const screenPt = eventToSvgScreen(e);
+      const canvasPt = screenToCanvas(screenPt, $pan, $zoom);
+      const mousePosU = canvasPxToU(canvasPt);
+
+      let newX = mousePosU.x - dragState.offsetU.x;
+      let newY = mousePosU.y - dragState.offsetU.y;
+
+      const snap = $gridSnap;
+      if (snap > 0) {
+        newX = snapToGrid(newX, snap);
+        newY = snapToGrid(newY, snap);
+      }
+
+      moveKey(dragState.keyId, newX, newY);
+    }
   }
 
   function onPointerUp(e: PointerEvent) {
     if (isPanning) {
       isPanning = false;
+      svgEl.releasePointerCapture(e.pointerId);
+      return;
+    }
+
+    if ($drag) {
+      drag.set(null);
       svgEl.releasePointerCapture(e.pointerId);
     }
   }
@@ -41,7 +94,6 @@
     e.preventDefault();
 
     const rect = svgEl.getBoundingClientRect();
-    // Mouse position relative to SVG element
     const mx = e.clientX - rect.left;
     const my = e.clientY - rect.top;
 
@@ -49,7 +101,6 @@
     const factor = e.deltaY < 0 ? 1.1 : 1 / 1.1;
     const newZoom = Math.min(10, Math.max(0.1, oldZoom * factor));
 
-    // Adjust pan so the point under the cursor stays fixed
     const newPanX = mx - (mx - $pan.x) * (newZoom / oldZoom);
     const newPanY = my - (my - $pan.y) * (newZoom / oldZoom);
 
@@ -71,7 +122,6 @@
     }
   }
 
-  // Grid size in canvas px (1U)
   const gridSize = SCALE;
 </script>
 
@@ -82,6 +132,7 @@
   bind:this={svgEl}
   class="canvas"
   class:panning={isPanning || $spaceHeld}
+  class:dragging={$drag !== null}
   xmlns="http://www.w3.org/2000/svg"
   onpointerdown={onPointerDown}
   onpointermove={onPointerMove}
@@ -109,7 +160,7 @@
 
   <g transform="translate({$pan.x}, {$pan.y}) scale({$zoom})">
     {#each $layout.keys as key (key.id)}
-      <KeyShape {key} />
+      <KeyShape {key} onDragStart={onKeyDragStart} />
     {/each}
   </g>
 </svg>
@@ -125,5 +176,9 @@
 
   .canvas.panning {
     cursor: grab;
+  }
+
+  .canvas.dragging {
+    cursor: move;
   }
 </style>
