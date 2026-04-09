@@ -104,3 +104,21 @@ export function updateKeys(keyIds: Set<string>, patch: Partial<Omit<Key, 'id'>>)
     keys: l.keys.map((k) => (keyIds.has(k.id) ? { ...k, ...patch } : k)),
   }));
 }
+
+/** Add a new key at the given position, returns its ID */
+export function addKey(x: number, y: number): string {
+  const id = uuid();
+  layout.update((l) => ({
+    ...l,
+    keys: [...l.keys, { id, x, y, rotation: 0, width: 1, height: 1, label: '' }],
+  }));
+  return id;
+}
+
+/** Delete all keys matching the given IDs */
+export function deleteKeys(keyIds: Set<string>) {
+  layout.update((l) => ({
+    ...l,
+    keys: l.keys.filter((k) => !keyIds.has(k.id)),
+  }));
+}

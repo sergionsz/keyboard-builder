@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { layout, moveKey, moveKeys, updateKeys } from '../stores/layout';
+  import { layout, moveKey, moveKeys, updateKeys, addKey, deleteKeys } from '../stores/layout';
   import { pan, zoom, spaceHeld, drag, gridSnap, selection, rotating } from '../stores/editor';
   import { SCALE, screenToCanvas, canvasPxToU } from '../lib/coords';
   import { snapToGrid, snapAngle } from '../lib/snap';
@@ -242,11 +242,42 @@
     pan.set({ x: newPanX, y: newPanY });
   }
 
-  // --- Space key for pan mode ---
+  // --- Keyboard shortcuts ---
   function onKeyDown(e: KeyboardEvent) {
+    // Ignore if focus is on an input element
+    if ((e.target as HTMLElement)?.tagName === 'INPUT') return;
+
     if (e.code === 'Space' && !e.repeat) {
       e.preventDefault();
       spaceHeld.set(true);
+      return;
+    }
+
+    // Delete / Backspace → delete selected keys
+    if (e.code === 'Delete' || e.code === 'Backspace') {
+      const sel = $selection;
+      if (sel.size > 0) {
+        e.preventDefault();
+        deleteKeys(sel);
+        selection.set(new Set());
+      }
+      return;
+    }
+
+    // N → add new key (at canvas center)
+    if (e.code === 'KeyN' && !e.ctrlKey && !e.metaKey) {
+      e.preventDefault();
+      const rect = svgEl.getBoundingClientRect();
+      const centerScreen = { x: rect.width / 2, y: rect.height / 2 };
+      const canvasPt = screenToCanvas(centerScreen, $pan, $zoom);
+      const posU = canvasPxToU(canvasPt);
+      // Snap to grid
+      const snap = $gridSnap;
+      const x = snap > 0 ? snapToGrid(posU.x, snap) : posU.x;
+      const y = snap > 0 ? snapToGrid(posU.y, snap) : posU.y;
+      const newId = addKey(x, y);
+      selection.set(new Set([newId]));
+      return;
     }
   }
 
