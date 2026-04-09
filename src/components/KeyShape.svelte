@@ -4,8 +4,9 @@
 
   const GAP = 2;    // px gap between key border and edge of cell
 
-  let { key, onDragStart }: {
+  let { key, selected = false, onDragStart }: {
     key: Key;
+    selected?: boolean;
     onDragStart?: (keyId: string, e: PointerEvent) => void;
   } = $props();
 
@@ -29,6 +30,18 @@
   class="key-group"
   onpointerdown={handlePointerDown}
 >
+  {#if selected}
+    <!-- Selection highlight behind the key -->
+    <rect
+      x={cx + GAP - 2}
+      y={cy + GAP - 2}
+      width={w - GAP * 2 + 4}
+      height={h - GAP * 2 + 4}
+      rx="5"
+      ry="5"
+      class="key-selection"
+    />
+  {/if}
   <!-- Key outer border -->
   <rect
     x={cx + GAP}
@@ -38,6 +51,7 @@
     rx="4"
     ry="4"
     class="key-border"
+    class:key-border-selected={selected}
   />
   <!-- Key top face (slightly inset to give 3D look) -->
   <rect
@@ -64,10 +78,22 @@
     cursor: move;
   }
 
+  .key-selection {
+    fill: none;
+    stroke: #4a9eff;
+    stroke-width: 2;
+    stroke-dasharray: none;
+  }
+
   .key-border {
     fill: #c8c8c8;
     stroke: #999;
     stroke-width: 1;
+  }
+
+  .key-border-selected {
+    stroke: #4a9eff;
+    stroke-width: 1.5;
   }
 
   .key-face {

@@ -21,3 +21,6 @@ export interface DragState {
 }
 
 export const drag = writable<DragState | null>(null);
+
+/** Set of currently selected key IDs */
+export const selection = writable<Set<string>>(new Set());

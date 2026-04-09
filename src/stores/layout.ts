@@ -86,3 +86,13 @@ export function moveKey(keyId: string, x: number, y: number) {
     keys: l.keys.map((k) => (k.id === keyId ? { ...k, x, y } : k)),
   }));
 }
+
+/** Move multiple keys by a delta (in U) */
+export function moveKeys(keyIds: Set<string>, dx: number, dy: number) {
+  layout.update((l) => ({
+    ...l,
+    keys: l.keys.map((k) =>
+      keyIds.has(k.id) ? { ...k, x: k.x + dx, y: k.y + dy } : k
+    ),
+  }));
+}

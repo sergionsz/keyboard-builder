@@ -1,6 +1,6 @@
 <script lang="ts">
-  import { layout, moveKey } from '../stores/layout';
-  import { pan, zoom, spaceHeld, drag, gridSnap } from '../stores/editor';
+  import { layout, moveKey, moveKeys } from '../stores/layout';
+  import { pan, zoom, spaceHeld, drag, gridSnap, selection } from '../stores/editor';
   import { SCALE, screenToCanvas, canvasPxToU } from '../lib/coords';
   import { snapToGrid } from '../lib/snap';
   import KeyShape from './KeyShape.svelte';
@@ -12,6 +12,13 @@
   let panStart = $state({ x: 0, y: 0 });
   let panOrigin = $state({ x: 0, y: 0 });
 
+  // Track whether a drag actually moved, to distinguish click from drag
+  let didDrag = $state(false);
+  // Store the shift state and keyId at pointerdown for use in pointerup
+  let clickContext = $state<{ keyId: string; shiftKey: boolean } | null>(null);
+  // Last snapped position during multi-key drag (for computing deltas)
+  let lastSnappedU = $state({ x: 0, y: 0 });
+
   /** Convert a PointerEvent to SVG-relative screen coords */
   function eventToSvgScreen(e: PointerEvent): { x: number; y: number } {
     const rect = svgEl.getBoundingClientRect();
@@ -20,7 +27,8 @@
 
   // --- Key drag start (called from KeyShape) ---
   function onKeyDragStart(keyId: string, e: PointerEvent) {
-    if ($spaceHeld) return; // space is for panning, not dragging keys
+    if ($spaceHeld) return;
+
     const screenPt = eventToSvgScreen(e);
     const canvasPt = screenToCanvas(screenPt, $pan, $zoom);
     const mousePosU = canvasPxToU(canvasPt);
@@ -28,11 +36,42 @@
     const key = $layout.keys.find((k) => k.id === keyId);
     if (!key) return;
 
+    // If clicking on an unselected key without shift, select only that key.
+    // If shift is held, toggle the key in the selection.
+    // If the key is already selected, keep the current selection (for multi-drag).
+    const sel = $selection;
+    if (e.shiftKey) {
+      const next = new Set(sel);
+      if (next.has(keyId)) {
+        next.delete(keyId);
+      } else {
+        next.add(keyId);
+      }
+      selection.set(next);
+    } else if (!sel.has(keyId)) {
+      selection.set(new Set([keyId]));
+    }
+    // else: key already selected, keep selection for potential multi-drag
+
+    didDrag = false;
+    clickContext = { keyId, shiftKey: e.shiftKey };
+
     drag.set({
       keyId,
       offsetU: { x: mousePosU.x - key.x, y: mousePosU.y - key.y },
       startU: { x: key.x, y: key.y },
     });
+
+    // Initialize last snapped position
+    const snap = $gridSnap;
+    if (snap > 0) {
+      lastSnappedU = {
+        x: snapToGrid(key.x, snap),
+        y: snapToGrid(key.y, snap),
+      };
+    } else {
+      lastSnappedU = { x: key.x, y: key.y };
+    }
 
     svgEl.setPointerCapture(e.pointerId);
   }
@@ -46,6 +85,12 @@
       panStart = { x: e.clientX, y: e.clientY };
       panOrigin = { x: $pan.x, y: $pan.y };
       svgEl.setPointerCapture(e.pointerId);
+      return;
+    }
+
+    // Left click on empty canvas → deselect all
+    if (e.button === 0 && !$spaceHeld) {
+      selection.set(new Set());
     }
   }
 
@@ -59,6 +104,7 @@
 
     const dragState = $drag;
     if (dragState) {
+      didDrag = true;
       const screenPt = eventToSvgScreen(e);
       const canvasPt = screenToCanvas(screenPt, $pan, $zoom);
       const mousePosU = canvasPxToU(canvasPt);
@@ -72,7 +118,18 @@
         newY = snapToGrid(newY, snap);
       }
 
-      moveKey(dragState.keyId, newX, newY);
+      const sel = $selection;
+      if (sel.size > 1 && sel.has(dragState.keyId)) {
+        // Multi-key drag: move all selected keys by the delta
+        const dx = newX - lastSnappedU.x;
+        const dy = newY - lastSnappedU.y;
+        if (dx !== 0 || dy !== 0) {
+          moveKeys(sel, dx, dy);
+          lastSnappedU = { x: newX, y: newY };
+        }
+      } else {
+        moveKey(dragState.keyId, newX, newY);
+      }
     }
   }
 
@@ -84,7 +141,15 @@
     }
 
     if ($drag) {
+      // If we didn't actually drag (just a click), and no shift was held,
+      // select only the clicked key (handles the case where we clicked an
+      // already-selected key in a multi-selection)
+      if (!didDrag && clickContext && !clickContext.shiftKey) {
+        selection.set(new Set([clickContext.keyId]));
+      }
+
       drag.set(null);
+      clickContext = null;
       svgEl.releasePointerCapture(e.pointerId);
     }
   }
@@ -160,7 +225,7 @@
 
   <g transform="translate({$pan.x}, {$pan.y}) scale({$zoom})">
     {#each $layout.keys as key (key.id)}
-      <KeyShape {key} onDragStart={onKeyDragStart} />
+      <KeyShape {key} selected={$selection.has(key.id)} onDragStart={onKeyDragStart} />
     {/each}
   </g>
 </svg>
