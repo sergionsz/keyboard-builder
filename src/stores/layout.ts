@@ -1,4 +1,4 @@
-import { writable } from 'svelte/store';
+import { writable, get } from 'svelte/store';
 import type { Key, Layout } from '../types';
 import { uuid } from '../lib/uuid';
 
@@ -77,9 +77,76 @@ function createSampleLayout(): Layout {
   };
 }
 
-export const layout = writable<Layout>(createSampleLayout());
+function deepClone(layout: Layout): Layout {
+  return { ...layout, keys: layout.keys.map((k) => ({ ...k })) };
+}
 
-/** Move a key to a new absolute position (in U) */
+// --- Undo/redo history ---
+const MAX_HISTORY = 200;
+const past: Layout[] = [];
+const future: Layout[] = [];
+
+export const layout = writable<Layout>(createSampleLayout());
+export const canUndo = writable(false);
+export const canRedo = writable(false);
+
+function syncFlags() {
+  canUndo.set(past.length > 0);
+  canRedo.set(future.length > 0);
+}
+
+/**
+ * Snapshot the current layout onto the undo stack.
+ * Call this BEFORE applying a mutation (or use the commit helpers below).
+ * For continuous operations (drag, rotate), call `beginContinuous()` before
+ * and `endContinuous()` after — only one snapshot is pushed.
+ */
+function pushUndo() {
+  past.push(deepClone(get(layout)));
+  if (past.length > MAX_HISTORY) past.shift();
+  future.length = 0;
+  syncFlags();
+}
+
+export function undo() {
+  const current = get(layout);
+  const prev = past.pop();
+  if (!prev) return;
+  future.push(deepClone(current));
+  layout.set(prev);
+  syncFlags();
+}
+
+export function redo() {
+  const current = get(layout);
+  const next = future.shift();
+  if (!next) return;
+  past.push(deepClone(current));
+  layout.set(next);
+  syncFlags();
+}
+
+// --- Continuous operation support ---
+// For drag/rotate: snapshot once at start, don't push per-pixel updates
+let continuousSnapshot: Layout | null = null;
+
+export function beginContinuous() {
+  continuousSnapshot = deepClone(get(layout));
+}
+
+export function endContinuous() {
+  if (continuousSnapshot) {
+    past.push(continuousSnapshot);
+    if (past.length > MAX_HISTORY) past.shift();
+    future.length = 0;
+    continuousSnapshot = null;
+    syncFlags();
+  }
+}
+
+// --- Mutation helpers (each pushes undo automatically) ---
+
+/** Move a key to a new absolute position (in U) — no undo push, for use during drag */
 export function moveKey(keyId: string, x: number, y: number) {
   layout.update((l) => ({
     ...l,
@@ -87,7 +154,7 @@ export function moveKey(keyId: string, x: number, y: number) {
   }));
 }
 
-/** Move multiple keys by a delta (in U) */
+/** Move multiple keys by a delta (in U) — no undo push, for use during drag */
 export function moveKeys(keyIds: Set<string>, dx: number, dy: number) {
   layout.update((l) => ({
     ...l,
@@ -97,7 +164,7 @@ export function moveKeys(keyIds: Set<string>, dx: number, dy: number) {
   }));
 }
 
-/** Update a partial set of fields on all keys matching the given IDs */
+/** Update fields on keys — no undo push when used during rotation drag */
 export function updateKeys(keyIds: Set<string>, patch: Partial<Omit<Key, 'id'>>) {
   layout.update((l) => ({
     ...l,
@@ -105,8 +172,15 @@ export function updateKeys(keyIds: Set<string>, patch: Partial<Omit<Key, 'id'>>)
   }));
 }
 
+/** Update fields with automatic undo snapshot (for discrete changes like property panel edits) */
+export function updateKeysWithUndo(keyIds: Set<string>, patch: Partial<Omit<Key, 'id'>>) {
+  pushUndo();
+  updateKeys(keyIds, patch);
+}
+
 /** Add a new key at the given position, returns its ID */
 export function addKey(x: number, y: number): string {
+  pushUndo();
   const id = uuid();
   layout.update((l) => ({
     ...l,
@@ -117,6 +191,7 @@ export function addKey(x: number, y: number): string {
 
 /** Delete all keys matching the given IDs */
 export function deleteKeys(keyIds: Set<string>) {
+  pushUndo();
   layout.update((l) => ({
     ...l,
     keys: l.keys.filter((k) => !keyIds.has(k.id)),

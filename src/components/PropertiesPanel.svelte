@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { layout, updateKeys } from '../stores/layout';
+  import { layout, updateKeysWithUndo } from '../stores/layout';
   import { selection } from '../stores/editor';
   import type { Key } from '../types';
 
@@ -29,11 +29,11 @@
     if (ids.size === 0) return;
 
     if (field === 'label') {
-      updateKeys(ids, { label: raw });
+      updateKeysWithUndo(ids, { label: raw });
     } else {
       const num = parseFloat(raw);
       if (!isNaN(num)) {
-        updateKeys(ids, { [field]: num });
+        updateKeysWithUndo(ids, { [field]: num });
       }
     }
   }

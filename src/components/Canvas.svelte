@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { layout, moveKey, moveKeys, updateKeys, addKey, deleteKeys } from '../stores/layout';
+  import { layout, moveKey, moveKeys, updateKeys, addKey, deleteKeys, beginContinuous, endContinuous, undo, redo } from '../stores/layout';
   import { pan, zoom, spaceHeld, drag, gridSnap, selection, rotating } from '../stores/editor';
   import { SCALE, screenToCanvas, canvasPxToU } from '../lib/coords';
   import { snapToGrid, snapAngle } from '../lib/snap';
@@ -56,6 +56,7 @@
 
     didDrag = false;
     clickContext = { keyId, shiftKey: e.shiftKey };
+    beginContinuous();
 
     drag.set({
       keyId,
@@ -90,6 +91,7 @@
     const kcy = (key.y + key.height / 2) * SCALE;
 
     const startAngle = Math.atan2(canvasPt.y - kcy, canvasPt.x - kcx) * (180 / Math.PI);
+    beginContinuous();
 
     rotating.set({
       keyId,
@@ -204,6 +206,7 @@
     }
 
     if ($rotating) {
+      endContinuous();
       rotating.set(null);
       svgEl.releasePointerCapture(e.pointerId);
       return;
@@ -217,6 +220,7 @@
         selection.set(new Set([clickContext.keyId]));
       }
 
+      if (didDrag) endContinuous();
       drag.set(null);
       clickContext = null;
       svgEl.releasePointerCapture(e.pointerId);
@@ -277,6 +281,17 @@
       const y = snap > 0 ? snapToGrid(posU.y, snap) : posU.y;
       const newId = addKey(x, y);
       selection.set(new Set([newId]));
+      return;
+    }
+
+    // Ctrl/Cmd+Z → undo, Ctrl/Cmd+Shift+Z → redo
+    if ((e.ctrlKey || e.metaKey) && e.code === 'KeyZ') {
+      e.preventDefault();
+      if (e.shiftKey) {
+        redo();
+      } else {
+        undo();
+      }
       return;
     }
   }
