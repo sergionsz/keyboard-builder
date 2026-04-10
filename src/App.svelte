@@ -1,12 +1,49 @@
 <script lang="ts">
   import Canvas from './components/Canvas.svelte';
   import PropertiesPanel from './components/PropertiesPanel.svelte';
+  import { layout } from './stores/layout';
+  import { importKle, exportKle } from './lib/serialize/kle';
+
+  function onExportKle() {
+    const json = exportKle($layout);
+    const blob = new Blob([JSON.stringify(json, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `${$layout.name || 'layout'}.json`;
+    a.click();
+    URL.revokeObjectURL(url);
+  }
+
+  function onImportKle() {
+    const input = document.createElement('input');
+    input.type = 'file';
+    input.accept = '.json';
+    input.onchange = async () => {
+      const file = input.files?.[0];
+      if (!file) return;
+      const text = await file.text();
+      try {
+        const json = JSON.parse(text);
+        const imported = importKle(json);
+        layout.set(imported);
+      } catch (e) {
+        console.error('Failed to import KLE JSON:', e);
+        alert('Failed to import KLE JSON. Check the console for details.');
+      }
+    };
+    input.click();
+  }
 </script>
 
 <main>
   <header>
     <h1>Damascus</h1>
     <span class="subtitle">Keyboard Layout Editor</span>
+    <div class="toolbar">
+      <button onclick={onImportKle}>Import KLE</button>
+      <button onclick={onExportKle}>Export KLE</button>
+    </div>
   </header>
   <div class="editor">
     <Canvas />
@@ -56,6 +93,27 @@
   .subtitle {
     font-size: 13px;
     color: #888;
+  }
+
+  .toolbar {
+    margin-left: auto;
+    display: flex;
+    gap: 8px;
+  }
+
+  .toolbar button {
+    background: #333;
+    color: #ccc;
+    border: 1px solid #444;
+    border-radius: 4px;
+    padding: 4px 12px;
+    font-size: 13px;
+    cursor: pointer;
+  }
+
+  .toolbar button:hover {
+    background: #444;
+    color: #fff;
   }
 
   .editor {
