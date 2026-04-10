@@ -112,19 +112,17 @@ describe('KLE export', () => {
       expect(foundR).toBe(true);
     });
 
-    it('emits rx and ry for rotation origin', () => {
+    it('omits rx/ry when rotation origin is (0,0)', () => {
       const kle = exportKle(layout);
-      let foundRxRy = false;
+      // With default rx/ry = 0, they should not be emitted
       for (const row of kle.slice(1) as any[][]) {
         for (const item of row) {
-          if (typeof item === 'object' && item.rx !== undefined) {
-            expect(typeof item.rx).toBe('number');
-            expect(typeof item.ry).toBe('number');
-            foundRxRy = true;
+          if (typeof item === 'object' && item.r !== undefined) {
+            expect(item.rx).toBeUndefined();
+            expect(item.ry).toBeUndefined();
           }
         }
       }
-      expect(foundRxRy).toBe(true);
     });
   });
 });
