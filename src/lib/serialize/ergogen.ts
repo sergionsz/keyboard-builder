@@ -21,13 +21,11 @@ function clusterColumns(keys: Key[], threshold = 0.5): Column[] {
 
   for (const key of sorted) {
     const keyCenterX = key.x + key.width / 2;
-    // Find existing column within threshold
+    // Find existing column within threshold — use fixed anchor (first key's center)
     const match = columns.find((c) => Math.abs(c.anchorX - keyCenterX) < threshold);
     if (match) {
       match.keys.push(key);
-      // Update anchor as running average
-      match.anchorX =
-        match.keys.reduce((s, k) => s + k.x + k.width / 2, 0) / match.keys.length;
+      // Do NOT update anchorX — keep it fixed to avoid drift with mixed-width keys
     } else {
       columns.push({
         name: `col_${columns.length}`,
@@ -44,6 +42,9 @@ function clusterColumns(keys: Key[], threshold = 0.5): Column[] {
     // Determine column-level rotation: use uniform value or 0
     const rotations = new Set(col.keys.map((k) => k.rotation));
     col.rotation = rotations.size === 1 ? col.keys[0].rotation : 0;
+    // Recalculate anchor as median of key centers (stable, not affected by order)
+    const centers = col.keys.map((k) => k.x + k.width / 2).sort((a, b) => a - b);
+    col.anchorX = centers[Math.floor(centers.length / 2)];
   }
 
   // Sort columns by X
@@ -75,26 +76,34 @@ export function exportErgogen(layout: Layout): string {
 
     // Spread: X distance from previous column (in mm)
     if (ci > 0) {
-      const spread = (col.anchorX - columns[ci - 1].anchorX) * MM_PER_U;
-      colData.spread = toMM(spread / MM_PER_U);
+      colData.spread = toMM(col.anchorX - columns[ci - 1].anchorX);
     }
 
     // Stagger: Y offset of this column's first key relative to previous column's first key
     if (ci > 0) {
       const prevFirstY = columns[ci - 1].keys[0].y;
       const thisFirstY = col.keys[0].y;
-      const stagger = (thisFirstY - prevFirstY) * MM_PER_U;
-      if (Math.abs(stagger) > 0.01) {
+      const staggerU = thisFirstY - prevFirstY;
+      if (Math.abs(staggerU) > 0.01) {
         // Ergogen stagger is positive = up, but our Y is positive = down
-        colData.stagger = toMM(-stagger / MM_PER_U);
+        colData.stagger = toMM(-staggerU);
       }
     }
 
     // Column-level rotation (splay)
     if (col.rotation !== 0) {
       colData.rotate = col.rotation;
-      // Rotation origin: column center
-      colData.origin = [toMM(-col.keys[0].width / 2), toMM(-col.keys[0].height / 2)];
+      // Rotation origin: column bounding box center
+      const minX = Math.min(...col.keys.map((k) => k.x));
+      const maxX = Math.max(...col.keys.map((k) => k.x + k.width));
+      const minY = Math.min(...col.keys.map((k) => k.y));
+      const maxY = Math.max(...col.keys.map((k) => k.y + k.height));
+      const bbCenterX = (minX + maxX) / 2;
+      const bbCenterY = (minY + maxY) / 2;
+      colData.origin = [
+        toMM(bbCenterX - col.anchorX),
+        toMM(-(bbCenterY - col.keys[0].y)),
+      ];
     }
 
     // Per-key row overrides
@@ -109,15 +118,21 @@ export function exportErgogen(layout: Layout): string {
       }
 
       // Per-key position shift (offset from expected grid position)
-      // Expected position: column anchor X, first key Y + ri * 1U padding
-      if (ri > 0) {
-        const expectedY = col.keys[0].y + ri; // each row is 1U apart
-        const actualY = key.y;
-        const yShift = actualY - expectedY;
-        const xShift = (key.x + key.width / 2) - col.anchorX;
-        if (Math.abs(xShift) > 0.05 || Math.abs(yShift) > 0.05) {
-          rowData.shift = [toMM(xShift), toMM(-yShift)]; // ergogen Y is inverted
+      // Use actual previous key height for row spacing instead of hardcoded 1U
+      let expectedY: number;
+      if (ri === 0) {
+        expectedY = col.keys[0].y;
+      } else {
+        expectedY = col.keys[0].y;
+        for (let j = 0; j < ri; j++) {
+          expectedY += col.keys[j].height;
         }
+      }
+      const actualY = key.y;
+      const yShift = actualY - expectedY;
+      const xShift = (key.x + key.width / 2) - col.anchorX;
+      if (Math.abs(xShift) > 0.05 || Math.abs(yShift) > 0.05) {
+        rowData.shift = [toMM(xShift), toMM(-yShift)]; // ergogen Y is inverted
       }
 
       rowsBlock[rowNames[ri]] = Object.keys(rowData).length > 0 ? rowData : null;

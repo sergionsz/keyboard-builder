@@ -57,7 +57,7 @@ export function importKle(json: KleJson): Layout {
     if (!Array.isArray(row)) continue;
 
     currentY += 1;
-    let currentX = rx || 0;
+    let currentX = rx;
     let rowY = currentY;
 
     // Reset per-key properties
@@ -164,18 +164,12 @@ export function exportKle(layout: Layout): KleJson {
       rows[rows.length - 1].push(key);
     }
 
-    // For rotated groups, compute rx/ry as bounding box center
+    // For rotated groups, use the first key's position as rx/ry.
+    // This produces clean un-rotated grid positions that cluster into rows properly.
     let rx = 0, ry = 0;
     if (rotation !== 0) {
-      let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
-      for (const k of sorted) {
-        minX = Math.min(minX, k.x);
-        maxX = Math.max(maxX, k.x + k.width);
-        minY = Math.min(minY, k.y);
-        maxY = Math.max(maxY, k.y + k.height);
-      }
-      rx = (minX + maxX) / 2;
-      ry = (minY + maxY) / 2;
+      rx = sorted[0].x;
+      ry = sorted[0].y;
     }
 
     // For rotated keys, un-rotate positions back to compute offsets relative to rx/ry
@@ -186,15 +180,22 @@ export function exportKle(layout: Layout): KleJson {
         })
       : sorted;
 
-    // Re-group unrotated keys into rows
+    // Re-group unrotated keys into rows (wider threshold for rotated groups
+    // since un-rotation can shift Y positions slightly off-grid)
+    const rowThreshold = rotation !== 0 ? 0.4 : 0.1;
     const uRows: Key[][] = [];
     let uCurrentRowY = -Infinity;
     for (const key of unrotated) {
-      if (Math.abs(key.y - uCurrentRowY) > 0.1) {
+      if (Math.abs(key.y - uCurrentRowY) > rowThreshold) {
         uRows.push([]);
         uCurrentRowY = key.y;
       }
       uRows[uRows.length - 1].push(key);
+    }
+
+    // Sort keys within each row by X
+    for (const row of uRows) {
+      row.sort((a, b) => a.x - b.x);
     }
 
     let lastRowY = -Infinity;
@@ -220,6 +221,7 @@ export function exportKle(layout: Layout): KleJson {
         kleRow.push({ y: round(yDelta) } as KleKeyProps);
       }
 
+      let keyYOffset = 0; // tracks per-key y offset within the row
       for (const key of row) {
         const props: KleKeyProps = {};
         let hasProps = false;
@@ -229,6 +231,15 @@ export function exportKle(layout: Layout): KleJson {
           props.x = round(xGap);
           hasProps = true;
         }
+
+        // Per-key Y offset within the row (key.y may differ from rowY in rotated groups)
+        const keyYDelta = key.y - rowY - keyYOffset;
+        if (Math.abs(keyYDelta) > 0.001) {
+          props.y = round(keyYDelta);
+          keyYOffset += keyYDelta;
+          hasProps = true;
+        }
+
         if (key.width !== 1) {
           props.w = key.width;
           hasProps = true;
