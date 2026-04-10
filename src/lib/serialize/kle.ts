@@ -67,16 +67,21 @@ export function importKle(json: KleJson): Layout {
     for (const item of row) {
       if (typeof item === 'object' && item !== null) {
         const props = item as KleKeyProps;
-        if (props.rx !== undefined) {
-          rx = props.rx;
+
+        // rx/ry update the rotation origin and reset cursor
+        if (props.rx !== undefined) rx = props.rx;
+        if (props.ry !== undefined) ry = props.ry;
+
+        // When r, rx, or ry change, reset cursor to rotation origin.
+        // This matches kle-serial behavior where rotation groups
+        // position keys relative to (rx, ry).
+        if (props.r !== undefined || props.rx !== undefined || props.ry !== undefined) {
+          if (props.r !== undefined) r = props.r;
           currentX = rx;
-        }
-        if (props.ry !== undefined) {
-          ry = props.ry;
           currentY = ry;
-          rowY = ry;
+          rowY = currentY;
         }
-        if (props.r !== undefined) r = props.r;
+
         if (props.x !== undefined) xOffset = props.x;
         if (props.y !== undefined) yOffset = props.y;
         if (props.w !== undefined) w = props.w;
