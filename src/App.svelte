@@ -3,6 +3,7 @@
   import PropertiesPanel from './components/PropertiesPanel.svelte';
   import { layout } from './stores/layout';
   import { importKle, exportKle } from './lib/serialize/kle';
+  import { exportErgogen } from './lib/serialize/ergogen';
 
   function onExportKle() {
     const json = exportKle($layout);
@@ -34,6 +35,17 @@
     };
     input.click();
   }
+
+  function onExportErgogen() {
+    const yamlStr = exportErgogen($layout);
+    const blob = new Blob([yamlStr], { type: 'text/yaml' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `${$layout.name || 'layout'}.yaml`;
+    a.click();
+    URL.revokeObjectURL(url);
+  }
 </script>
 
 <main>
@@ -43,6 +55,7 @@
     <div class="toolbar">
       <button onclick={onImportKle}>Import KLE</button>
       <button onclick={onExportKle}>Export KLE</button>
+      <button onclick={onExportErgogen}>Export Ergogen</button>
     </div>
   </header>
   <div class="editor">
