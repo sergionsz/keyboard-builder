@@ -151,10 +151,10 @@ describe('KLE import', () => {
       expect(layout.name).toBe('Imported Layout');
     });
 
-    it('extracts only first legend from multi-legend labels', () => {
+    it('preserves full multi-legend labels', () => {
       const json = [['Top\nBottom\nCenter']];
       const layout = importKle(json as any);
-      expect(layout.keys[0].label).toBe('Top');
+      expect(layout.keys[0].label).toBe('Top\nBottom\nCenter');
     });
 
     it('handles x offset between keys', () => {

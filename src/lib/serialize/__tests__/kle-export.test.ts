@@ -112,14 +112,13 @@ describe('KLE export', () => {
       expect(foundR).toBe(true);
     });
 
-    it('omits rx/ry when rotation origin is (0,0)', () => {
+    it('always emits rx/ry for rotation groups (even when 0) to force cursor reset', () => {
       const kle = exportKle(layout);
-      // With default rx/ry = 0, they should not be emitted
       for (const row of kle.slice(1) as any[][]) {
         for (const item of row) {
           if (typeof item === 'object' && item.r !== undefined) {
-            expect(item.rx).toBeUndefined();
-            expect(item.ry).toBeUndefined();
+            expect(item.rx).toBe(0);
+            expect(item.ry).toBe(0);
           }
         }
       }

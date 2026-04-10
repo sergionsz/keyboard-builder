@@ -18,6 +18,8 @@
   }
 
   let sharedLabel = $derived(sharedValue((k) => k.label));
+  let sharedTopLabel = $derived(sharedValue((k) => k.label.split('\n')[0]));
+  let sharedBottomLabel = $derived(sharedValue((k) => k.label.split('\n')[1] ?? ''));
   let sharedWidth = $derived(sharedValue((k) => k.width));
   let sharedHeight = $derived(sharedValue((k) => k.height));
   let sharedX = $derived(sharedValue((k) => k.x));
@@ -37,6 +39,20 @@
       }
     }
   }
+
+  function onLabelInput(position: 'top' | 'bottom', raw: string) {
+    const ids = $selection;
+    if (ids.size === 0) return;
+
+    // Update each selected key, preserving the other label part
+    for (const key of selectedKeys) {
+      const parts = key.label.split('\n');
+      const top = position === 'top' ? raw : (parts[0] ?? '');
+      const bottom = position === 'bottom' ? raw : (parts[1] ?? '');
+      const combined = bottom ? `${top}\n${bottom}` : top;
+      updateKeysWithUndo(new Set([key.id]), { label: combined });
+    }
+  }
 </script>
 
 <aside class="panel">
@@ -45,15 +61,27 @@
   {:else}
     <h2>{count === 1 ? 'Key Properties' : `${count} Keys Selected`}</h2>
 
-    <div class="field">
-      <label for="prop-label">Label</label>
-      <input
-        id="prop-label"
-        type="text"
-        value={sharedLabel ?? ''}
-        placeholder={sharedLabel === undefined ? 'mixed' : ''}
-        oninput={(e) => onInput('label', e.currentTarget.value)}
-      />
+    <div class="row">
+      <div class="field">
+        <label for="prop-top-label">Top Label</label>
+        <input
+          id="prop-top-label"
+          type="text"
+          value={sharedTopLabel ?? ''}
+          placeholder={sharedTopLabel === undefined ? 'mixed' : ''}
+          oninput={(e) => onLabelInput('top', e.currentTarget.value)}
+        />
+      </div>
+      <div class="field">
+        <label for="prop-bottom-label">Bottom Label</label>
+        <input
+          id="prop-bottom-label"
+          type="text"
+          value={sharedBottomLabel ?? ''}
+          placeholder={sharedBottomLabel === undefined ? 'mixed' : ''}
+          oninput={(e) => onLabelInput('bottom', e.currentTarget.value)}
+        />
+      </div>
     </div>
 
     <div class="row">

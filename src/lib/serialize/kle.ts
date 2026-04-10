@@ -47,61 +47,56 @@ export function importKle(json: KleJson): Layout {
     startIndex = 1;
   }
 
-  let currentY = -1; // will become 0 on first row
-
-  // Rotation state persists across the row
-  let r = 0, rx = 0, ry = 0;
+  // Cursor state — matches kle-serial's `current` object
+  let cx = 0;  // current x position
+  let cy = 0;  // current y position (incremented at END of each row)
+  let r = 0;   // rotation angle
+  let rx = 0;  // rotation origin x
+  let ry = 0;  // rotation origin y
+  let w = 1, h = 1;
 
   for (let rowIdx = startIndex; rowIdx < json.length; rowIdx++) {
     const row = json[rowIdx] as KleRow;
     if (!Array.isArray(row)) continue;
 
-    currentY += 1;
-    let currentX = rx;
-    let rowY = currentY;
-
-    // Reset per-key properties
-    let w = 1, h = 1;
-    let xOffset = 0, yOffset = 0;
-
     for (const item of row) {
       if (typeof item === 'object' && item !== null) {
         const props = item as KleKeyProps;
 
-        // rx/ry update the rotation origin and reset cursor
-        if (props.rx !== undefined) rx = props.rx;
-        if (props.ry !== undefined) ry = props.ry;
+        // r just sets the angle, no cursor reset
+        if (props.r !== undefined) r = props.r;
 
-        // When r, rx, or ry change, reset cursor to rotation origin.
-        // This matches kle-serial behavior where rotation groups
-        // position keys relative to (rx, ry).
-        if (props.r !== undefined || props.rx !== undefined || props.ry !== undefined) {
-          if (props.r !== undefined) r = props.r;
-          currentX = rx;
-          currentY = ry;
-          rowY = currentY;
+        // rx/ry reset cursor to the cluster origin (matches kle-serial extend behavior)
+        if (props.rx !== undefined) {
+          rx = props.rx;
+          cx = rx;
+          cy = ry;
+        }
+        if (props.ry !== undefined) {
+          ry = props.ry;
+          cy = ry;
+          cx = rx;
         }
 
-        if (props.x !== undefined) xOffset = props.x;
-        if (props.y !== undefined) yOffset = props.y;
+        // x and y are additive to cursor position
+        if (props.x !== undefined) cx += props.x;
+        if (props.y !== undefined) cy += props.y;
+
         if (props.w !== undefined) w = props.w;
         if (props.h !== undefined) h = props.h;
       } else if (typeof item === 'string') {
-        currentX += xOffset;
-        rowY += yOffset;
-
-        // Compute final position
-        let finalX = currentX;
-        let finalY = rowY;
+        // Compute final position (apply rotation if needed)
+        let finalX = cx;
+        let finalY = cy;
 
         if (r !== 0) {
-          const rotated = rotatePoint(currentX, rowY, rx, ry, r);
+          const rotated = rotatePoint(cx, cy, rx, ry, r);
           finalX = rotated.x;
           finalY = rotated.y;
         }
 
-        // Extract first legend only (position 0)
-        const label = item.split('\n')[0];
+        // Preserve full multi-line KLE label (display code shows first line only)
+        const label = item;
 
         keys.push({
           id: uuid(),
@@ -113,16 +108,18 @@ export function importKle(json: KleJson): Layout {
           label,
         });
 
-        // Advance cursor
-        currentX += w;
+        // Advance x cursor by key width
+        cx += w;
 
         // Reset per-key properties
-        xOffset = 0;
-        yOffset = 0;
         w = 1;
         h = 1;
       }
     }
+
+    // End of row: increment y, reset x to rotation origin
+    cy += 1;
+    cx = rx;
   }
 
   return { name, keys };
@@ -174,89 +171,69 @@ export function exportKle(layout: Layout): KleJson {
     rotatedGroups.get(key.rotation)!.push(key);
   }
 
-  // --- Emit non-rotated keys ---
-  // Track currentY the same way the importer does: starts at -1, +1 per emitted row
-  let currentY = -1;
+  // Emulate the import cursor to produce correct offsets.
+  // Import cursor: cy starts at 0, cy++ at END of each row,
+  // y offsets are additive to cy, cx resets to rx at end of row.
+  let cy = 0;
+  let emRx = 0; // emulated rotation_x (for cx reset at end of row)
 
   const nonRotRows = groupIntoRows(nonRotated);
 
   for (const row of nonRotRows) {
     const kleRow: KleRow = [];
-    currentY += 1; // implicit row increment (matches import behavior)
     const rowY = row[0].y;
 
-    // Y offset to correct from implicit currentY to actual rowY
-    const yDelta = rowY - currentY;
+    // Emit y offset to move cy to the correct position
+    const yDelta = rowY - cy;
 
-    let cursorX = 0;
-    let firstKeyInRow = true;
+    let cx = emRx; // cx resets to rotation_x at start of each row
 
-    for (const key of row) {
+    for (let ki = 0; ki < row.length; ki++) {
+      const key = row[ki];
       const props: KleKeyProps = {};
       let hasProps = false;
 
-      // Emit y offset on the first key's property object (or as a standalone prop obj)
-      if (firstKeyInRow && Math.abs(yDelta) > 0.001) {
+      // Emit y offset on first key in the row
+      if (ki === 0 && Math.abs(yDelta) > 0.001) {
         props.y = round(yDelta);
         hasProps = true;
       }
 
-      const xGap = key.x - cursorX;
+      const xGap = key.x - cx;
       if (Math.abs(xGap) > 0.001) {
         props.x = round(xGap);
         hasProps = true;
       }
 
-      if (key.width !== 1) {
-        props.w = key.width;
-        hasProps = true;
-      }
-      if (key.height !== 1) {
-        props.h = key.height;
-        hasProps = true;
-      }
+      if (key.width !== 1) { props.w = key.width; hasProps = true; }
+      if (key.height !== 1) { props.h = key.height; hasProps = true; }
 
       if (hasProps) kleRow.push(props);
       kleRow.push(key.label);
-      cursorX = key.x + key.width;
-      firstKeyInRow = false;
+      cx = key.x + key.width;
     }
 
-    // Update currentY: the y offset applies to the row but doesn't change the
-    // base currentY counter (it's a per-row offset). The base stays at the implicit value.
-    // Actually in KLE, y offsets DO accumulate into the cursor. Let me match import:
-    // import does: currentY += 1 (at row start), then rowY = currentY, then rowY += yOffset
-    // So currentY itself is not modified by yOffset. But the effective row position is currentY + yOffset.
-    // For the next row, currentY increments from where it was (not from rowY).
-    // This means: currentY stays at its pre-yOffset value. Don't update it with yDelta.
-    // Actually wait - let me re-read the import. Import line 59: currentY += 1.
-    // Line 61: rowY = currentY. Line 86: rowY += yOffset (only when processing string item).
-    // So currentY is NOT modified by yOffset - it just keeps incrementing.
-    // This means: on export, currentY should just be the row index counter.
-    // The yDelta we emit accounts for the difference.
-    // currentY is already correct (it was incremented at the top of this loop).
-
+    // After the row: cy gets the y offset applied, then cy++ (end of row)
+    cy = rowY + 1;
     result.push(kleRow as any);
   }
 
   // --- Emit rotated groups ---
   for (const [rotation, keys] of rotatedGroups) {
-    // For rotated groups, rx/ry default to 0,0 in the import when not specified.
-    // We use (0, 0) as rotation origin for simplest round-trip.
+    // Use (0,0) as rotation origin. Always emit rx/ry to force cursor reset.
     const rx = 0, ry = 0;
 
-    // Un-rotate keys to get their "grid" positions as the import would see them
+    // Un-rotate keys to get their "grid" positions
     const unrotated = keys.map((k) => {
       const p = rotatePoint(k.x, k.y, rx, ry, -rotation);
       return { ...k, x: p.x, y: p.y };
     });
 
-    // Group un-rotated keys into rows (wider threshold for float drift from rotation)
     const uRows = groupIntoRows(unrotated, 0.4);
 
-    // Track cursor within the rotation group
-    // When r/rx/ry are set, import resets: currentX = rx, currentY = ry
-    let rotCursorY = ry; // will be set to ry on first row (import resets to ry)
+    // On first row: emit {r, rx, ry} which resets cy to ry, cx to rx
+    // On subsequent rows: cy++ happened at end of prev row, emit y delta
+    let rotCy = ry; // cursor will be reset to ry by rx/ry emission
     let isFirstRow = true;
 
     for (const row of uRows) {
@@ -264,64 +241,50 @@ export function exportKle(layout: Layout): KleJson {
       const rowY = row[0].y;
 
       if (isFirstRow) {
-        // Emit rotation header
-        const props: KleKeyProps = { r: rotation };
-        // Only emit rx/ry if non-zero
-        if (rx !== 0) props.rx = round(rx);
-        if (ry !== 0) props.ry = round(ry);
-
-        // Y offset from ry to first row
+        const headerProps: KleKeyProps = { r: rotation, rx, ry };
+        // y offset from ry to first row position
         const yDelta = rowY - ry;
-        if (Math.abs(yDelta) > 0.001) props.y = round(yDelta);
-
-        // X offset: will be handled per-key
-        kleRow.push(props);
-        rotCursorY = ry; // import resets to ry
+        if (Math.abs(yDelta) > 0.001) headerProps.y = round(yDelta);
+        kleRow.push(headerProps);
+        rotCy = ry + (Math.abs(rowY - ry) > 0.001 ? rowY - ry : 0);
         isFirstRow = false;
       } else {
-        // Subsequent rows in the rotation group: import increments currentY by 1
-        rotCursorY += 1;
-        const yDelta = rowY - rotCursorY;
+        rotCy += 1; // end-of-prev-row increment
+        const yDelta = rowY - rotCy;
         if (Math.abs(yDelta) > 0.001) {
           kleRow.push({ y: round(yDelta) } as KleKeyProps);
+          rotCy += yDelta;
         }
       }
 
-      let cursorX = rx; // import resets to rx each row
-      let keyYOffset = 0;
+      let cx = rx;
+      let keyYAccum = 0; // accumulated y offsets within row
 
       for (const key of row) {
         const props: KleKeyProps = {};
         let hasProps = false;
 
-        const xGap = key.x - cursorX;
-        if (Math.abs(xGap) > 0.001) {
-          props.x = round(xGap);
-          hasProps = true;
-        }
+        const xGap = key.x - cx;
+        if (Math.abs(xGap) > 0.001) { props.x = round(xGap); hasProps = true; }
 
         // Per-key Y offset within the row
-        const keyYDelta = key.y - rowY - keyYOffset;
+        const keyYDelta = key.y - rowY - keyYAccum;
         if (Math.abs(keyYDelta) > 0.001) {
           props.y = round(keyYDelta);
-          keyYOffset += keyYDelta;
+          keyYAccum += keyYDelta;
           hasProps = true;
         }
 
-        if (key.width !== 1) {
-          props.w = key.width;
-          hasProps = true;
-        }
-        if (key.height !== 1) {
-          props.h = key.height;
-          hasProps = true;
-        }
+        if (key.width !== 1) { props.w = key.width; hasProps = true; }
+        if (key.height !== 1) { props.h = key.height; hasProps = true; }
 
         if (hasProps) kleRow.push(props);
         kleRow.push(key.label);
-        cursorX = key.x + key.width;
+        cx = key.x + key.width;
       }
 
+      // After the row: cy gets y offsets applied + 1
+      rotCy = rowY + keyYAccum;
       result.push(kleRow as any);
     }
   }

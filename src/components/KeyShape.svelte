@@ -16,6 +16,9 @@
   let h = $derived(key.height * SCALE);
   let centerX = $derived(cx + w / 2);
   let centerY = $derived(cy + h / 2);
+  let legends = $derived(key.label.split('\n'));
+  let topLabel = $derived(legends[0] || '');
+  let bottomLabel = $derived(legends[1] || '');
 
   function handlePointerDown(e: PointerEvent) {
     if (e.button !== 0) return; // left click only
@@ -63,14 +66,28 @@
     ry="3"
     class="key-face"
   />
-  <!-- Label -->
+  <!-- Top label (shifted / primary) -->
   <text
     x={cx + GAP + 8}
     y={cy + GAP + 16}
     class="key-label"
+    fill="#333"
+    font-size="11"
   >
-    {key.label}
+    {topLabel}
   </text>
+  <!-- Bottom label (unshifted / secondary) -->
+  {#if bottomLabel}
+    <text
+      x={cx + GAP + 8}
+      y={cy + h - GAP - 8}
+      class="key-label"
+      fill="#333"
+      font-size="11"
+    >
+      {bottomLabel}
+    </text>
+  {/if}
 </g>
 
 <style>
