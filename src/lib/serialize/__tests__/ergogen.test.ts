@@ -3,6 +3,9 @@ import yaml from 'js-yaml';
 import { exportErgogen } from '../ergogen';
 import type { Layout, Key } from '../../../types';
 
+const MM_PER_U = 19.05;
+const toMM = (u: number) => Math.round(u * MM_PER_U * 100) / 100;
+
 function makeKey(partial: Partial<Key> & { label: string }): Key {
   return {
     id: partial.id ?? partial.label,
@@ -20,6 +23,22 @@ function parseErgogen(layout: Layout): any {
   return yaml.load(yamlStr);
 }
 
+// Helper: run through ergogen and return point positions
+async function processErgogen(layout: Layout): Promise<Map<string, { x: number; y: number; r: number }>> {
+  const ergogen = (await import('ergogen')).default;
+  const yamlStr = exportErgogen(layout);
+  const result = await ergogen.process(yamlStr, true, () => {});
+  const map = new Map<string, { x: number; y: number; r: number }>();
+  for (const [name, pt] of Object.entries(result.points)) {
+    map.set(name, {
+      x: Math.round((pt as any).x * 100) / 100,
+      y: Math.round((pt as any).y * 100) / 100,
+      r: Math.round((pt as any).r * 100) / 100,
+    });
+  }
+  return map;
+}
+
 describe('Ergogen export', () => {
   describe('empty layout', () => {
     it('produces valid YAML with empty zones', () => {
@@ -28,7 +47,7 @@ describe('Ergogen export', () => {
     });
   });
 
-  describe('simple 3x2 grid (no rotation, all 1U)', () => {
+  describe('simple 3x2 grid', () => {
     const layout: Layout = {
       name: 'Grid',
       keys: [
@@ -47,38 +66,23 @@ describe('Ergogen export', () => {
       expect(Object.keys(cols)).toHaveLength(3);
     });
 
-    it('sets spread to 19.05mm (1U)', () => {
-      const doc = parseErgogen(layout);
-      const cols = doc.points.zones.matrix.columns;
-      const colNames = Object.keys(cols);
-      // First column has no spread, subsequent columns should have spread ≈ 19.05
-      expect(cols[colNames[1]].spread).toBeCloseTo(19.05, 1);
-      expect(cols[colNames[2]].spread).toBeCloseTo(19.05, 1);
+    it('produces correct number of ergogen points', async () => {
+      const points = await processErgogen(layout);
+      expect(points.size).toBe(6);
     });
 
-    it('has no stagger for uniform grid', () => {
-      const doc = parseErgogen(layout);
-      const cols = doc.points.zones.matrix.columns;
-      for (const name of Object.keys(cols)) {
-        const col = cols[name];
-        if (col && col.stagger !== undefined) {
-          expect(col.stagger).toBeCloseTo(0, 1);
-        }
+    it('positions all keys correctly via ergogen', async () => {
+      const points = await processErgogen(layout);
+      // Verify each key's ergogen position matches our internal model
+      const allPoints = [...points.values()].sort((a, b) => a.x - b.x || b.y - a.y);
+      const expected = layout.keys
+        .map((k) => ({ x: toMM(k.x + k.width / 2), y: toMM(-(k.y + k.height / 2)) }))
+        .sort((a, b) => a.x - b.x || b.y - a.y);
+
+      for (let i = 0; i < expected.length; i++) {
+        expect(allPoints[i].x).toBeCloseTo(expected[i].x, 0);
+        expect(allPoints[i].y).toBeCloseTo(expected[i].y, 0);
       }
-    });
-
-    it('sets key.spread and key.padding to 19.05', () => {
-      const doc = parseErgogen(layout);
-      const key = doc.points.zones.matrix.key;
-      expect(key.spread).toBeCloseTo(19.05, 1);
-      expect(key.padding).toBeCloseTo(19.05, 1);
-    });
-
-    it('declares global rows', () => {
-      const doc = parseErgogen(layout);
-      const rows = doc.points.zones.matrix.rows;
-      expect(Object.keys(rows)).toContain('row_0');
-      expect(Object.keys(rows)).toContain('row_1');
     });
   });
 
@@ -88,22 +92,27 @@ describe('Ergogen export', () => {
       keys: [
         makeKey({ label: 'A', x: 0, y: 0 }),
         makeKey({ label: 'B', x: 0, y: 1 }),
-        makeKey({ label: 'C', x: 1, y: 0.25 }), // staggered down 0.25U
+        makeKey({ label: 'C', x: 1, y: 0.25 }),
         makeKey({ label: 'D', x: 1, y: 1.25 }),
       ],
     };
 
-    it('computes correct stagger value in mm', () => {
-      const doc = parseErgogen(layout);
-      const cols = doc.points.zones.matrix.columns;
-      const colNames = Object.keys(cols);
-      // Second column stagger: -(0.25) * 19.05 = -4.7625 ≈ -4.76
-      // (negative because ergogen up = positive, our down = positive, and second col is lower)
-      expect(cols[colNames[1]].stagger).toBeCloseTo(-4.76, 0);
+    it('positions staggered keys correctly via ergogen', async () => {
+      const points = await processErgogen(layout);
+      expect(points.size).toBe(4);
+      const allPoints = [...points.values()].sort((a, b) => a.x - b.x || b.y - a.y);
+      const expected = layout.keys
+        .map((k) => ({ x: toMM(k.x + k.width / 2), y: toMM(-(k.y + k.height / 2)) }))
+        .sort((a, b) => a.x - b.x || b.y - a.y);
+
+      for (let i = 0; i < expected.length; i++) {
+        expect(allPoints[i].x).toBeCloseTo(expected[i].x, 0);
+        expect(allPoints[i].y).toBeCloseTo(expected[i].y, 0);
+      }
     });
   });
 
-  describe('rotated column (splay)', () => {
+  describe('rotated keys (splay)', () => {
     const layout: Layout = {
       name: 'Splayed',
       keys: [
@@ -114,22 +123,25 @@ describe('Ergogen export', () => {
       ],
     };
 
-    it('sets column-level rotate for uniformly rotated column', () => {
+    it('separates rotated and non-rotated keys into different zones', () => {
       const doc = parseErgogen(layout);
-      const cols = doc.points.zones.matrix.columns;
-      const colNames = Object.keys(cols);
-      // First column has all keys at -10°
-      expect(cols[colNames[0]].rotate).toBe(-10);
-      // Second column has no rotation
-      expect(cols[colNames[1]]?.rotate).toBeUndefined();
+      const zoneNames = Object.keys(doc.points.zones);
+      expect(zoneNames).toContain('matrix');
+      expect(zoneNames.length).toBe(2); // matrix + rotated zone
     });
 
-    it('sets origin for rotated column', () => {
-      const doc = parseErgogen(layout);
-      const cols = doc.points.zones.matrix.columns;
-      const colNames = Object.keys(cols);
-      expect(cols[colNames[0]].origin).toBeDefined();
-      expect(cols[colNames[0]].origin).toHaveLength(2);
+    it('positions all keys correctly via ergogen', async () => {
+      const points = await processErgogen(layout);
+      expect(points.size).toBe(4);
+      const allPoints = [...points.values()].sort((a, b) => a.x - b.x || b.y - a.y);
+      const expected = layout.keys
+        .map((k) => ({ x: toMM(k.x + k.width / 2), y: toMM(-(k.y + k.height / 2)) }))
+        .sort((a, b) => a.x - b.x || b.y - a.y);
+
+      for (let i = 0; i < expected.length; i++) {
+        expect(allPoints[i].x).toBeCloseTo(expected[i].x, 0);
+        expect(allPoints[i].y).toBeCloseTo(expected[i].y, 0);
+      }
     });
   });
 
@@ -144,38 +156,17 @@ describe('Ergogen export', () => {
       ],
     };
 
-    it('clusters correctly despite different widths', () => {
-      const doc = parseErgogen(layout);
-      const cols = doc.points.zones.matrix.columns;
-      // Tab (center 0.75) and Caps (center 0.875) should cluster together
-      // Q (center 2.0) and A (center 2.25) should cluster together
-      expect(Object.keys(cols)).toHaveLength(2);
-    });
-  });
+    it('positions mixed-width keys correctly via ergogen', async () => {
+      const points = await processErgogen(layout);
+      expect(points.size).toBe(4);
+      const allPoints = [...points.values()].sort((a, b) => a.x - b.x || b.y - a.y);
+      const expected = layout.keys
+        .map((k) => ({ x: toMM(k.x + k.width / 2), y: toMM(-(k.y + k.height / 2)) }))
+        .sort((a, b) => a.x - b.x || b.y - a.y);
 
-  describe('non-1U height keys', () => {
-    const layout: Layout = {
-      name: 'Tall Keys',
-      keys: [
-        makeKey({ label: 'A', x: 0, y: 0, height: 1.5 }),
-        makeKey({ label: 'B', x: 0, y: 1.5 }), // after 1.5U tall key
-        makeKey({ label: 'C', x: 0, y: 2.5 }),
-      ],
-    };
-
-    it('uses actual key heights for row spacing, not hardcoded 1U', () => {
-      const doc = parseErgogen(layout);
-      const cols = doc.points.zones.matrix.columns;
-      const colNames = Object.keys(cols);
-      const col = cols[colNames[0]];
-      // B is at y=1.5, expected at 0+1.5=1.5 → no shift needed
-      // C is at y=2.5, expected at 0+1.5+1=2.5 → no shift needed
-      if (col && col.rows) {
-        const row1 = col.rows.row_1;
-        const row2 = col.rows.row_2;
-        // Neither row should need a shift since positions match expected heights
-        if (row1) expect(row1.shift).toBeUndefined();
-        if (row2) expect(row2.shift).toBeUndefined();
+      for (let i = 0; i < expected.length; i++) {
+        expect(allPoints[i].x).toBeCloseTo(expected[i].x, 0);
+        expect(allPoints[i].y).toBeCloseTo(expected[i].y, 0);
       }
     });
   });
@@ -193,7 +184,7 @@ describe('Ergogen export', () => {
       expect(() => yaml.load(yamlStr)).not.toThrow();
     });
 
-    it('has points.zones.matrix structure', () => {
+    it('has points.zones structure', () => {
       const layout: Layout = {
         name: 'Test',
         keys: [makeKey({ label: 'A', x: 0, y: 0 })],
@@ -205,6 +196,30 @@ describe('Ergogen export', () => {
       expect(doc.points.zones.matrix.columns).toBeDefined();
       expect(doc.points.zones.matrix.rows).toBeDefined();
       expect(doc.points.zones.matrix.key).toBeDefined();
+    });
+  });
+
+  describe('split keyboard fixture', () => {
+    it('positions all 69 keys correctly via ergogen', async () => {
+      const { importKle } = await import('../kle');
+      const { readFileSync } = await import('fs');
+      const kleJson = JSON.parse(
+        readFileSync('src/lib/serialize/__tests__/fixtures/split-keyboard.json', 'utf8'),
+      );
+      const layout = importKle(kleJson);
+      const points = await processErgogen(layout);
+
+      expect(points.size).toBe(69);
+
+      const allPoints = [...points.values()].sort((a, b) => a.x - b.x || b.y - a.y);
+      const expected = layout.keys
+        .map((k) => ({ x: toMM(k.x + k.width / 2), y: toMM(-(k.y + k.height / 2)) }))
+        .sort((a, b) => a.x - b.x || b.y - a.y);
+
+      for (let i = 0; i < expected.length; i++) {
+        expect(allPoints[i].x).toBeCloseTo(expected[i].x, 0);
+        expect(allPoints[i].y).toBeCloseTo(expected[i].y, 0);
+      }
     });
   });
 });
