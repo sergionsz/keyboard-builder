@@ -50,8 +50,7 @@
 
 <main>
   <header>
-    <h1>Damascus</h1>
-    <span class="subtitle">Keyboard Layout Editor</span>
+    <h1>Keyboard Builder</h1>
     <div class="toolbar">
       <button onclick={onImportKle}>Import KLE</button>
       <button onclick={onExportKle}>Export KLE</button>
@@ -101,11 +100,6 @@
     margin: 0;
     font-size: 18px;
     font-weight: 600;
-  }
-
-  .subtitle {
-    font-size: 13px;
-    color: #888;
   }
 
   .toolbar {
