@@ -5,6 +5,8 @@
   import { importKle, exportKle } from './lib/serialize/kle';
   import { exportErgogen } from './lib/serialize/ergogen';
 
+  let showHelp = $state(false);
+
   function onExportKle() {
     const json = exportKle($layout);
     const blob = new Blob([JSON.stringify(json, null, 2)], { type: 'application/json' });
@@ -60,6 +62,7 @@
       <button onclick={onImportKle}>Import KLE</button>
       <button onclick={onExportKle}>Export KLE</button>
       <button onclick={onExportErgogen}>Export Ergogen</button>
+      <button class="help-btn" onclick={() => showHelp = true}>?</button>
     </div>
   </header>
   <div class="editor">
@@ -67,6 +70,52 @@
     <PropertiesPanel />
   </div>
 </main>
+
+{#if showHelp}
+  <!-- svelte-ignore a11y_no_static_element_interactions -->
+  <div class="modal-backdrop" onclick={() => showHelp = false} onkeydown={(e) => e.key === 'Escape' && (showHelp = false)}>
+    <div class="modal" onclick={(e) => e.stopPropagation()}>
+      <div class="modal-header">
+        <h2>Help</h2>
+        <button class="modal-close" onclick={() => showHelp = false}>&times;</button>
+      </div>
+      <div class="modal-body">
+        <section>
+          <h3>Getting started</h3>
+          <p>Keyboard Builder is a visual editor for designing custom keyboard layouts. You can add, move, resize, and rotate keys on a grid canvas, then export your layout in KLE or Ergogen format.</p>
+        </section>
+        <section>
+          <h3>Keyboard shortcuts</h3>
+          <table>
+            <tbody>
+              <tr><td><kbd>N</kbd></td><td>Add a new key at the center of the canvas</td></tr>
+              <tr><td><kbd>Delete</kbd> / <kbd>Backspace</kbd></td><td>Delete selected keys</td></tr>
+              <tr><td><kbd>Ctrl+Z</kbd> / <kbd>&#8984;Z</kbd></td><td>Undo</td></tr>
+              <tr><td><kbd>Ctrl+Shift+Z</kbd> / <kbd>&#8984;&#8679;Z</kbd></td><td>Redo</td></tr>
+              <tr><td><kbd>Space</kbd> + drag</td><td>Pan the canvas</td></tr>
+            </tbody>
+          </table>
+        </section>
+        <section>
+          <h3>Mouse controls</h3>
+          <table>
+            <tbody>
+              <tr><td>Click</td><td>Select a key</td></tr>
+              <tr><td>Click + drag</td><td>Move selected keys</td></tr>
+              <tr><td>Drag on empty area</td><td>Box select</td></tr>
+              <tr><td>Scroll wheel</td><td>Zoom in/out</td></tr>
+              <tr><td>Rotation handle</td><td>Rotate selected key</td></tr>
+            </tbody>
+          </table>
+        </section>
+        <section>
+          <h3>Properties panel</h3>
+          <p>Select one or more keys to edit their position, size, rotation, and label in the right-side panel.</p>
+        </section>
+      </div>
+    </div>
+  </div>
+{/if}
 
 <style>
   :global(body) {
@@ -143,5 +192,114 @@
     flex: 1;
     overflow: hidden;
     display: flex;
+  }
+
+  .help-btn {
+    font-weight: 700;
+    width: 28px;
+    padding: 4px !important;
+    text-align: center;
+  }
+
+  .modal-backdrop {
+    position: fixed;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.6);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 100;
+  }
+
+  .modal {
+    background: #222;
+    border: 1px solid #444;
+    border-radius: 8px;
+    width: 520px;
+    max-height: 80vh;
+    overflow-y: auto;
+    box-shadow: 0 8px 32px rgba(0, 0, 0, 0.5);
+  }
+
+  .modal-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 16px 20px 12px;
+    border-bottom: 1px solid #333;
+  }
+
+  .modal-header h2 {
+    margin: 0;
+    font-size: 16px;
+    font-weight: 600;
+  }
+
+  .modal-close {
+    background: none;
+    border: none;
+    color: #888;
+    font-size: 22px;
+    cursor: pointer;
+    padding: 0 4px;
+    line-height: 1;
+  }
+
+  .modal-close:hover {
+    color: #fff;
+  }
+
+  .modal-body {
+    padding: 16px 20px 20px;
+  }
+
+  .modal-body section {
+    margin-bottom: 16px;
+  }
+
+  .modal-body section:last-child {
+    margin-bottom: 0;
+  }
+
+  .modal-body h3 {
+    margin: 0 0 8px;
+    font-size: 14px;
+    font-weight: 600;
+    color: #ccc;
+  }
+
+  .modal-body p {
+    margin: 0;
+    font-size: 13px;
+    color: #aaa;
+    line-height: 1.5;
+  }
+
+  .modal-body table {
+    width: 100%;
+    font-size: 13px;
+    border-collapse: collapse;
+  }
+
+  .modal-body td {
+    padding: 4px 8px;
+    color: #aaa;
+  }
+
+  .modal-body td:first-child {
+    white-space: nowrap;
+    color: #ccc;
+    width: 1%;
+    padding-right: 16px;
+  }
+
+  .modal-body kbd {
+    background: #333;
+    border: 1px solid #555;
+    border-radius: 3px;
+    padding: 1px 5px;
+    font-size: 12px;
+    font-family: inherit;
+    color: #eee;
   }
 </style>
