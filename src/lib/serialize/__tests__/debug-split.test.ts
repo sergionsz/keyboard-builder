@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { importKle } from '../kle';
 import splitKb from './fixtures/split-keyboard.json';
 
-describe('KLE import — split keyboard with rotation groups', () => {
+describe('KLE import: split keyboard with rotation groups', () => {
   const layout = importKle(splitKb as any);
 
   it('imports all 69 keys', () => {

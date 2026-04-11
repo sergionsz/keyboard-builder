@@ -7,7 +7,7 @@ const toMM = (u: number) => Math.round(u * MM_PER_U * 100) / 100;
 interface Column {
   name: string;
   keys: Key[];
-  anchorX: number; // in U — the x center of the column
+  anchorX: number; // in U; the x center of the column
 }
 
 /**

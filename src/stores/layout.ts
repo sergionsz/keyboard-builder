@@ -99,7 +99,7 @@ function syncFlags() {
  * Snapshot the current layout onto the undo stack.
  * Call this BEFORE applying a mutation (or use the commit helpers below).
  * For continuous operations (drag, rotate), call `beginContinuous()` before
- * and `endContinuous()` after — only one snapshot is pushed.
+ * and `endContinuous()` after; only one snapshot is pushed.
  */
 function pushUndo() {
   past.push(deepClone(get(layout)));
@@ -146,7 +146,7 @@ export function endContinuous() {
 
 // --- Mutation helpers (each pushes undo automatically) ---
 
-/** Move a key to a new absolute position (in U) — no undo push, for use during drag */
+/** Move a key to a new absolute position (in U). No undo push; for use during drag. */
 export function moveKey(keyId: string, x: number, y: number) {
   layout.update((l) => ({
     ...l,
@@ -154,7 +154,7 @@ export function moveKey(keyId: string, x: number, y: number) {
   }));
 }
 
-/** Move multiple keys by a delta (in U) — no undo push, for use during drag */
+/** Move multiple keys by a delta (in U). No undo push; for use during drag. */
 export function moveKeys(keyIds: Set<string>, dx: number, dy: number) {
   layout.update((l) => ({
     ...l,
@@ -164,7 +164,7 @@ export function moveKeys(keyIds: Set<string>, dx: number, dy: number) {
   }));
 }
 
-/** Update fields on keys — no undo push when used during rotation drag */
+/** Update fields on keys. No undo push when used during rotation drag. */
 export function updateKeys(keyIds: Set<string>, patch: Partial<Omit<Key, 'id'>>) {
   layout.update((l) => ({
     ...l,

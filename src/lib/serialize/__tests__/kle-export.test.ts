@@ -79,7 +79,7 @@ describe('KLE export', () => {
     it('does not emit x offset for contiguous keys', () => {
       const kle = exportKle(layout);
       const row1 = kle[1] as any[];
-      // After Tab (1.5U at x=0), Q is at x=1.5 — cursor should be at 1.5 after Tab
+      // After Tab (1.5U at x=0), Q is at x=1.5; cursor should be at 1.5 after Tab
       // So no x offset needed for Q
       const propObjs = row1.filter(
         (item: any) => typeof item === 'object' && item.x !== undefined

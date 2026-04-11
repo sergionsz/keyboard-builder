@@ -47,7 +47,7 @@ export function importKle(json: KleJson): Layout {
     startIndex = 1;
   }
 
-  // Cursor state — matches kle-serial's `current` object
+  // Cursor state (matches kle-serial's `current` object)
   let cx = 0;  // current x position
   let cy = 0;  // current y position (incremented at END of each row)
   let r = 0;   // rotation angle

@@ -10,11 +10,11 @@ export const spaceHeld = writable(false);
 /** Snap-to-grid increment in U (0 = disabled) */
 export const gridSnap = writable(0.25);
 
-/** Drag state — tracks which key is being dragged and the offset from its origin */
+/** Drag state: tracks which key is being dragged and the offset from its origin. */
 export interface DragState {
   /** ID of the key being dragged */
   keyId: string;
-  /** Mouse grab offset from key origin in U — so key doesn't jump to cursor */
+  /** Mouse grab offset from key origin in U (so key doesn't jump to cursor). */
   offsetU: { x: number; y: number };
   /** Key's original position at drag start, for computing deltas */
   startU: { x: number; y: number };
