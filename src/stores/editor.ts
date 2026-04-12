@@ -10,6 +10,9 @@ export const spaceHeld = writable(false);
 /** Snap-to-grid increment in U (0 = disabled) */
 export const gridSnap = writable(0.25);
 
+/** Minimum gap between keys in U (0 = disabled) */
+export const minGap = writable(0);
+
 /** Drag state: tracks which key is being dragged and the offset from its origin. */
 export interface DragState {
   /** ID of the key being dragged */

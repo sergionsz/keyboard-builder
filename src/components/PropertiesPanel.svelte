@@ -1,6 +1,6 @@
 <script lang="ts">
-  import { layout, updateKeysWithUndo } from '../stores/layout';
-  import { selection } from '../stores/editor';
+  import { layout, updateKeysWithUndo, linkMirrorPair, unlinkMirrorPair } from '../stores/layout';
+  import { selection, minGap } from '../stores/editor';
   import type { Key } from '../types';
 
   // Derive the selected keys from current layout + selection
@@ -147,7 +147,57 @@
         oninput={(e) => onInput('rotation', e.currentTarget.value)}
       />
     </div>
+
+    <!-- Mirror pair controls -->
+    {#if count === 2}
+      {@const ids = [...$selection]}
+      {@const areLinked = $layout.mirrorPairs[ids[0]] === ids[1]}
+      <div class="mirror-section">
+        {#if areLinked}
+          <button class="mirror-btn unlink" onclick={() => unlinkMirrorPair(ids[0])}>
+            Unlink Mirror Pair
+          </button>
+        {:else}
+          <button class="mirror-btn" onclick={() => linkMirrorPair(ids[0], ids[1])}>
+            Link as Mirror Pair
+          </button>
+        {/if}
+      </div>
+    {:else if count === 1}
+      {@const keyId = [...$selection][0]}
+      {@const partnerId = $layout.mirrorPairs[keyId]}
+      {#if partnerId}
+        {@const partner = $layout.keys.find((k) => k.id === partnerId)}
+        <div class="mirror-section">
+          <div class="mirror-info">
+            <span class="mirror-label">Mirror of</span>
+            <span class="mirror-partner">{partner?.label || '(unlabeled)'}</span>
+          </div>
+          <button class="mirror-btn unlink" onclick={() => unlinkMirrorPair(keyId)}>
+            Unlink
+          </button>
+        </div>
+      {/if}
+    {/if}
   {/if}
+
+  <div class="settings-section">
+    <h2>Settings</h2>
+    <div class="field">
+      <label for="setting-min-gap">Min Gap (U)</label>
+      <input
+        id="setting-min-gap"
+        type="number"
+        step="0.05"
+        min="0"
+        value={$minGap}
+        oninput={(e) => {
+          const val = parseFloat(e.currentTarget.value);
+          minGap.set(isNaN(val) || val < 0 ? 0 : val);
+        }}
+      />
+    </div>
+  </div>
 </aside>
 
 <style>
@@ -158,6 +208,8 @@
     padding: 12px;
     overflow-y: auto;
     flex-shrink: 0;
+    display: flex;
+    flex-direction: column;
   }
 
   .hint {
@@ -214,5 +266,54 @@
   input::placeholder {
     color: #555;
     font-style: italic;
+  }
+
+  .mirror-section {
+    margin-top: 4px;
+    margin-bottom: 10px;
+    padding-top: 8px;
+    border-top: 1px solid #333;
+  }
+
+  .mirror-btn {
+    width: 100%;
+    background: #333;
+    color: #ff9f4a;
+    border: 1px solid #555;
+    border-radius: 4px;
+    padding: 6px 10px;
+    font-size: 12px;
+    cursor: pointer;
+    font-family: inherit;
+  }
+
+  .mirror-btn:hover {
+    background: #444;
+  }
+
+  .mirror-btn.unlink {
+    color: #aaa;
+  }
+
+  .mirror-info {
+    display: flex;
+    align-items: baseline;
+    gap: 6px;
+    margin-bottom: 6px;
+    font-size: 12px;
+  }
+
+  .mirror-label {
+    color: #888;
+  }
+
+  .mirror-partner {
+    color: #ff9f4a;
+  }
+
+  .settings-section {
+    margin-top: auto;
+    padding-top: 12px;
+    border-top: 1px solid #333;
   }
 </style>

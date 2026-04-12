@@ -1,17 +1,63 @@
 <script lang="ts">
-  import { layout, moveKey, moveKeys, updateKeys, addKey, deleteKeys, beginContinuous, endContinuous, undo, redo } from '../stores/layout';
-  import { pan, zoom, spaceHeld, drag, gridSnap, selection, rotating } from '../stores/editor';
+  import { layout, moveKey, moveKeys, updateKeys, addKey, deleteKeys, beginContinuous, endContinuous, undo, redo, setMirrorAxisX } from '../stores/layout';
+  import { pan, zoom, spaceHeld, drag, gridSnap, minGap, selection, rotating } from '../stores/editor';
   import { SCALE, screenToCanvas, canvasPxToU } from '../lib/coords';
   import { snapToGrid, snapAngle } from '../lib/snap';
+  import { wouldViolateGap } from '../lib/collision';
+  import type { Key } from '../types';
   import KeyShape from './KeyShape.svelte';
   import SelectionHandles from './SelectionHandles.svelte';
 
   let svgEl: SVGSVGElement;
 
+  /** Compute the mirrored version of a key (matching layout store logic) */
+  function mirrorKey(source: Key): Key {
+    const axisX = $layout.mirrorAxisX;
+    return {
+      ...source,
+      x: axisX * 2 - source.x - source.width,
+      y: source.y,
+      rotation: -source.rotation,
+    };
+  }
+
+  /**
+   * Build the moved + mirrored keys arrays for gap checking.
+   * Returns [allMovedKeys, otherKeys] where allMovedKeys includes
+   * the mirror partners of moved keys (with their projected positions).
+   */
+  function buildGapCheckSets(
+    movedKeys: Key[],
+    allKeys: Key[],
+    pairs: Record<string, string>,
+  ): [Key[], Key[]] {
+    const movedIds = new Set(movedKeys.map((k) => k.id));
+
+    // Add mirror partners of moved keys (with their would-be mirrored position)
+    const mirroredPartners: Key[] = [];
+    for (const mk of movedKeys) {
+      const partnerId = pairs[mk.id];
+      if (partnerId && !movedIds.has(partnerId)) {
+        const partner = allKeys.find((k) => k.id === partnerId);
+        if (partner) {
+          mirroredPartners.push({ ...partner, ...mirrorKey(mk), id: partner.id });
+          movedIds.add(partnerId);
+        }
+      }
+    }
+
+    const allMoved = [...movedKeys, ...mirroredPartners];
+    const others = allKeys.filter((k) => !movedIds.has(k.id));
+    return [allMoved, others];
+  }
+
   // --- Panning state ---
   let isPanning = $state(false);
   let panStart = $state({ x: 0, y: 0 });
   let panOrigin = $state({ x: 0, y: 0 });
+
+  // --- Mirror axis dragging ---
+  let isDraggingAxis = $state(false);
 
   // Track whether a drag actually moved, to distinguish click from drag
   let didDrag = $state(false);
@@ -78,6 +124,15 @@
     svgEl.setPointerCapture(e.pointerId);
   }
 
+  // --- Mirror axis drag start ---
+  function onAxisDragStart(e: PointerEvent) {
+    if (e.button !== 0) return;
+    e.stopPropagation();
+    isDraggingAxis = true;
+    beginContinuous();
+    svgEl.setPointerCapture(e.pointerId);
+  }
+
   // --- Rotation handle start ---
   function onRotateStart(keyId: string, e: PointerEvent) {
     const key = $layout.keys.find((k) => k.id === keyId);
@@ -128,6 +183,17 @@
       return;
     }
 
+    // Mirror axis drag
+    if (isDraggingAxis) {
+      const screenPt = eventToSvgScreen(e);
+      const canvasPt = screenToCanvas(screenPt, $pan, $zoom);
+      const posU = canvasPxToU(canvasPt);
+      const snap = $gridSnap;
+      const newX = snap > 0 && e.shiftKey ? snapToGrid(posU.x, snap) : posU.x;
+      setMirrorAxisX(newX);
+      return;
+    }
+
     // Rotation handle drag
     const rotState = $rotating;
     if (rotState) {
@@ -151,9 +217,19 @@
       newRotation = ((newRotation + 180) % 360 + 360) % 360 - 180;
 
       const sel = $selection;
+      const rotGap = $minGap;
+
       if (sel.size > 1 && sel.has(rotState.keyId)) {
         const delta = newRotation - key.rotation;
         if (delta !== 0) {
+          if (rotGap > 0) {
+            const allKeys = $layout.keys;
+            const movedKeys = allKeys
+              .filter((k) => sel.has(k.id))
+              .map((k) => ({ ...k, rotation: k.rotation + delta }));
+            const [allMoved, others] = buildGapCheckSets(movedKeys, allKeys, $layout.mirrorPairs);
+            if (wouldViolateGap(allMoved, others, rotGap)) return;
+          }
           for (const id of sel) {
             const k = $layout.keys.find((kk) => kk.id === id);
             if (k) {
@@ -162,6 +238,11 @@
           }
         }
       } else {
+        if (rotGap > 0) {
+          const rotatedKey = { ...key, rotation: newRotation };
+          const [allMoved, others] = buildGapCheckSets([rotatedKey], $layout.keys, $layout.mirrorPairs);
+          if (wouldViolateGap(allMoved, others, rotGap)) return;
+        }
         updateKeys(new Set([rotState.keyId]), { rotation: newRotation });
       }
       return;
@@ -178,21 +259,39 @@
       let newY = mousePosU.y - dragState.offsetU.y;
 
       const snap = $gridSnap;
-      if (snap > 0) {
+      if (snap > 0 && e.shiftKey) {
         newX = snapToGrid(newX, snap);
         newY = snapToGrid(newY, snap);
       }
 
       const sel = $selection;
+      const gap = $minGap;
+
       if (sel.size > 1 && sel.has(dragState.keyId)) {
         // Multi-key drag: move all selected keys by the delta
         const dx = newX - lastSnappedU.x;
         const dy = newY - lastSnappedU.y;
         if (dx !== 0 || dy !== 0) {
+          if (gap > 0) {
+            const allKeys = $layout.keys;
+            const movedKeys = allKeys
+              .filter((k) => sel.has(k.id))
+              .map((k) => ({ ...k, x: k.x + dx, y: k.y + dy }));
+            const [allMoved, others] = buildGapCheckSets(movedKeys, allKeys, $layout.mirrorPairs);
+            if (wouldViolateGap(allMoved, others, gap)) return;
+          }
           moveKeys(sel, dx, dy);
           lastSnappedU = { x: newX, y: newY };
         }
       } else {
+        if (gap > 0) {
+          const key = $layout.keys.find((k) => k.id === dragState.keyId);
+          if (key) {
+            const movedKey = { ...key, x: newX, y: newY };
+            const [allMoved, others] = buildGapCheckSets([movedKey], $layout.keys, $layout.mirrorPairs);
+            if (wouldViolateGap(allMoved, others, gap)) return;
+          }
+        }
         moveKey(dragState.keyId, newX, newY);
       }
     }
@@ -201,6 +300,13 @@
   function onPointerUp(e: PointerEvent) {
     if (isPanning) {
       isPanning = false;
+      svgEl.releasePointerCapture(e.pointerId);
+      return;
+    }
+
+    if (isDraggingAxis) {
+      endContinuous();
+      isDraggingAxis = false;
       svgEl.releasePointerCapture(e.pointerId);
       return;
     }
@@ -340,8 +446,51 @@
   <rect width="100%" height="100%" fill="url(#grid)" />
 
   <g transform="translate({$pan.x}, {$pan.y}) scale({$zoom})">
+    <!-- Mirror axis line (only show when there are mirror pairs) -->
+    {#if Object.keys($layout.mirrorPairs).length > 0}
+      <!-- Visible axis line -->
+      <line
+        x1={$layout.mirrorAxisX * SCALE} y1={-10000}
+        x2={$layout.mirrorAxisX * SCALE} y2={10000}
+        stroke="#4a9eff"
+        stroke-width={1 / $zoom}
+        stroke-dasharray="{8 / $zoom} {4 / $zoom}"
+        opacity="0.3"
+        pointer-events="none"
+      />
+      <!-- Invisible wider hit area for dragging -->
+      <!-- svelte-ignore a11y_no_static_element_interactions -->
+      <line
+        x1={$layout.mirrorAxisX * SCALE} y1={-10000}
+        x2={$layout.mirrorAxisX * SCALE} y2={10000}
+        stroke="transparent"
+        stroke-width={8 / $zoom}
+        class="axis-handle"
+        onpointerdown={onAxisDragStart}
+      />
+    {/if}
+
+    <!-- Connection lines between mirror pairs (only when one is selected) -->
+    {#each Object.entries($layout.mirrorPairs) as [idA, idB]}
+      {@const keyA = $layout.keys.find((k) => k.id === idA)}
+      {@const keyB = $layout.keys.find((k) => k.id === idB)}
+      {#if keyA && keyB && idA < idB && ($selection.has(idA) || $selection.has(idB))}
+        <line
+          x1={(keyA.x + keyA.width / 2) * SCALE}
+          y1={(keyA.y + keyA.height / 2) * SCALE}
+          x2={(keyB.x + keyB.width / 2) * SCALE}
+          y2={(keyB.y + keyB.height / 2) * SCALE}
+          stroke="#ff9f4a"
+          stroke-width={1 / $zoom}
+          stroke-dasharray="{4 / $zoom} {3 / $zoom}"
+          opacity="0.5"
+          pointer-events="none"
+        />
+      {/if}
+    {/each}
+
     {#each $layout.keys as key (key.id)}
-      <KeyShape {key} selected={$selection.has(key.id)} onDragStart={onKeyDragStart} />
+      <KeyShape {key} selected={$selection.has(key.id)} linked={!!$layout.mirrorPairs[key.id]} onDragStart={onKeyDragStart} />
     {/each}
     <!-- Rotation handle for selected keys -->
     {#each $layout.keys.filter((k) => $selection.has(k.id)) as key (key.id)}
@@ -369,5 +518,9 @@
 
   .canvas.rotating {
     cursor: grabbing;
+  }
+
+  .axis-handle {
+    cursor: ew-resize;
   }
 </style>
