@@ -11,4 +11,8 @@ export interface Key {
 export interface Layout {
   name: string;
   keys: Key[];
+  /** Bidirectional mirror pairs: mirrorPairs[keyIdA] = keyIdB and vice versa */
+  mirrorPairs: Record<string, string>;
+  /** X position of the mirror axis in U-space (computed from the first linked pair) */
+  mirrorAxisX: number;
 }

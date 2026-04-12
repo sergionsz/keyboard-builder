@@ -74,11 +74,61 @@ function createSampleLayout(): Layout {
       { id: uuid(), x: 12.5,  y: 4, rotation: 0, width: 1.25, height: 1, label: 'Menu' },
       { id: uuid(), x: 13.75, y: 4, rotation: 0, width: 1.25, height: 1, label: 'Ctrl' },
     ],
+    mirrorPairs: {},
+    mirrorAxisX: 0,
   };
 }
 
 function deepClone(layout: Layout): Layout {
-  return { ...layout, keys: layout.keys.map((k) => ({ ...k })) };
+  return { ...layout, keys: layout.keys.map((k) => ({ ...k })), mirrorPairs: { ...layout.mirrorPairs } };
+}
+
+// --- Mirror support ---
+
+/** Flag to prevent mirror sync feedback loops */
+let _mirrorUpdating = false;
+
+/** Compute the mirrored position/rotation for a key across the given axis */
+function mirrorProps(source: Key, axisX: number): Partial<Key> {
+  return {
+    x: axisX * 2 - source.x - source.width,
+    y: source.y,
+    rotation: -source.rotation,
+    width: source.width,
+    height: source.height,
+  };
+}
+
+/** Sync mirror partners for the given key IDs */
+function syncMirror(keyIds: Set<string>) {
+  if (_mirrorUpdating) return;
+  _mirrorUpdating = true;
+
+  layout.update((l) => {
+    const pairs = l.mirrorPairs;
+    const axisX = l.mirrorAxisX;
+    const updates = new Map<string, Partial<Key>>();
+
+    for (const id of keyIds) {
+      const partnerId = pairs[id];
+      if (!partnerId || keyIds.has(partnerId)) continue;
+      const source = l.keys.find((k) => k.id === id);
+      if (!source) continue;
+      updates.set(partnerId, mirrorProps(source, axisX));
+    }
+
+    if (updates.size === 0) return l;
+
+    return {
+      ...l,
+      keys: l.keys.map((k) => {
+        const patch = updates.get(k.id);
+        return patch ? { ...k, ...patch } : k;
+      }),
+    };
+  });
+
+  _mirrorUpdating = false;
 }
 
 // --- Undo/redo history ---
@@ -152,6 +202,7 @@ export function moveKey(keyId: string, x: number, y: number) {
     ...l,
     keys: l.keys.map((k) => (k.id === keyId ? { ...k, x, y } : k)),
   }));
+  syncMirror(new Set([keyId]));
 }
 
 /** Move multiple keys by a delta (in U). No undo push; for use during drag. */
@@ -162,6 +213,7 @@ export function moveKeys(keyIds: Set<string>, dx: number, dy: number) {
       keyIds.has(k.id) ? { ...k, x: k.x + dx, y: k.y + dy } : k
     ),
   }));
+  syncMirror(keyIds);
 }
 
 /** Update fields on keys. No undo push when used during rotation drag. */
@@ -170,6 +222,7 @@ export function updateKeys(keyIds: Set<string>, patch: Partial<Omit<Key, 'id'>>)
     ...l,
     keys: l.keys.map((k) => (keyIds.has(k.id) ? { ...k, ...patch } : k)),
   }));
+  syncMirror(keyIds);
 }
 
 /** Update fields with automatic undo snapshot (for discrete changes like property panel edits) */
@@ -189,11 +242,79 @@ export function addKey(x: number, y: number): string {
   return id;
 }
 
-/** Delete all keys matching the given IDs */
+/** Delete all keys matching the given IDs, cleaning up mirror pairs */
 export function deleteKeys(keyIds: Set<string>) {
   pushUndo();
-  layout.update((l) => ({
-    ...l,
-    keys: l.keys.filter((k) => !keyIds.has(k.id)),
-  }));
+  layout.update((l) => {
+    const pairs = { ...l.mirrorPairs };
+    for (const id of keyIds) {
+      const partnerId = pairs[id];
+      if (partnerId) delete pairs[partnerId];
+      delete pairs[id];
+    }
+    return {
+      ...l,
+      keys: l.keys.filter((k) => !keyIds.has(k.id)),
+      mirrorPairs: pairs,
+    };
+  });
 }
+
+/** Link two keys as a mirror pair. Immediately syncs the second key to mirror the first. */
+export function linkMirrorPair(keyIdA: string, keyIdB: string) {
+  pushUndo();
+  layout.update((l) => {
+    const pairs = { ...l.mirrorPairs };
+    // Remove any existing partners
+    const oldA = pairs[keyIdA];
+    const oldB = pairs[keyIdB];
+    if (oldA) { delete pairs[oldA]; delete pairs[keyIdA]; }
+    if (oldB) { delete pairs[oldB]; delete pairs[keyIdB]; }
+    // Create new link
+    pairs[keyIdA] = keyIdB;
+    pairs[keyIdB] = keyIdA;
+
+    // Compute the mirror axis from the midpoint between the two keys' centers
+    const keyA = l.keys.find((k) => k.id === keyIdA);
+    const keyB = l.keys.find((k) => k.id === keyIdB);
+    let axisX = l.mirrorAxisX;
+    if (keyA && keyB) {
+      const centerA = keyA.x + keyA.width / 2;
+      const centerB = keyB.x + keyB.width / 2;
+      axisX = (centerA + centerB) / 2;
+    }
+
+    return { ...l, mirrorPairs: pairs, mirrorAxisX: axisX };
+  });
+  // Sync B to mirror A
+  syncMirror(new Set([keyIdA]));
+}
+
+/** Unlink a mirror pair */
+export function unlinkMirrorPair(keyId: string) {
+  pushUndo();
+  layout.update((l) => {
+    const pairs = { ...l.mirrorPairs };
+    const partnerId = pairs[keyId];
+    if (partnerId) delete pairs[partnerId];
+    delete pairs[keyId];
+    return { ...l, mirrorPairs: pairs };
+  });
+}
+
+/** Move the mirror axis to a new X position (in U). No undo push; for use during drag. */
+export function setMirrorAxisX(x: number) {
+  layout.update((l) => ({ ...l, mirrorAxisX: x }));
+  // Re-sync all mirror pairs to the new axis
+  const l = get(layout);
+  const allLinkedIds = new Set(Object.keys(l.mirrorPairs));
+  if (allLinkedIds.size > 0) {
+    // Only sync one side of each pair (the "A" side where idA < idB)
+    const toSync = new Set<string>();
+    for (const [idA, idB] of Object.entries(l.mirrorPairs)) {
+      if (idA < idB) toSync.add(idA);
+    }
+    syncMirror(toSync);
+  }
+}
+
