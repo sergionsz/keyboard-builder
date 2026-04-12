@@ -92,6 +92,7 @@
               <tr><td><kbd>Delete</kbd> / <kbd>Backspace</kbd></td><td>Delete selected keys</td></tr>
               <tr><td><kbd>Ctrl+Z</kbd> / <kbd>&#8984;Z</kbd></td><td>Undo</td></tr>
               <tr><td><kbd>Ctrl+Shift+Z</kbd> / <kbd>&#8984;&#8679;Z</kbd></td><td>Redo</td></tr>
+              <tr><td><kbd>M</kbd></td><td>Link / unlink selected pair as mirror</td></tr>
               <tr><td><kbd>Space</kbd> + drag</td><td>Pan the canvas</td></tr>
             </tbody>
           </table>
