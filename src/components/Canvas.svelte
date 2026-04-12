@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { layout, moveKey, moveKeys, updateKeys, addKey, deleteKeys, beginContinuous, endContinuous, undo, redo, setMirrorAxisX } from '../stores/layout';
+  import { layout, moveKey, moveKeys, updateKeys, addKey, deleteKeys, beginContinuous, endContinuous, undo, redo, setMirrorAxisX, linkMirrorPair, unlinkMirrorPair } from '../stores/layout';
   import { pan, zoom, spaceHeld, drag, gridSnap, minGap, selection, rotating } from '../stores/editor';
   import { SCALE, screenToCanvas, canvasPxToU } from '../lib/coords';
   import { snapToGrid, snapAngle } from '../lib/snap';
@@ -7,6 +7,8 @@
   import type { Key } from '../types';
   import KeyShape from './KeyShape.svelte';
   import SelectionHandles from './SelectionHandles.svelte';
+
+  const MM_PER_U = 19.05;
 
   let svgEl: SVGSVGElement;
 
@@ -217,7 +219,7 @@
       newRotation = ((newRotation + 180) % 360 + 360) % 360 - 180;
 
       const sel = $selection;
-      const rotGap = $minGap;
+      const rotGap = $minGap / MM_PER_U;
 
       if (sel.size > 1 && sel.has(rotState.keyId)) {
         const delta = newRotation - key.rotation;
@@ -265,7 +267,7 @@
       }
 
       const sel = $selection;
-      const gap = $minGap;
+      const gap = $minGap / MM_PER_U;
 
       if (sel.size > 1 && sel.has(dragState.keyId)) {
         // Multi-key drag: move all selected keys by the delta
@@ -387,6 +389,22 @@
       const y = snap > 0 ? snapToGrid(posU.y, snap) : posU.y;
       const newId = addKey(x, y);
       selection.set(new Set([newId]));
+      return;
+    }
+
+    // M → link/unlink mirror pair (exactly 2 keys selected)
+    if (e.code === 'KeyM' && !e.ctrlKey && !e.metaKey) {
+      const sel = $selection;
+      if (sel.size === 2) {
+        e.preventDefault();
+        const ids = [...sel];
+        const areLinked = $layout.mirrorPairs[ids[0]] === ids[1];
+        if (areLinked) {
+          unlinkMirrorPair(ids[0]);
+        } else {
+          linkMirrorPair(ids[0], ids[1]);
+        }
+      }
       return;
     }
 

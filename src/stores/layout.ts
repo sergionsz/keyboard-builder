@@ -1,6 +1,7 @@
 import { writable, get } from 'svelte/store';
 import type { Key, Layout } from '../types';
 import { uuid } from '../lib/uuid';
+import { serializeLayout, deserializeLayout } from '../lib/serialize/url';
 
 /** Sample layout: a basic 60% first row to demonstrate rendering */
 function createSampleLayout(): Layout {
@@ -305,16 +306,55 @@ export function unlinkMirrorPair(keyId: string) {
 /** Move the mirror axis to a new X position (in U). No undo push; for use during drag. */
 export function setMirrorAxisX(x: number) {
   layout.update((l) => ({ ...l, mirrorAxisX: x }));
-  // Re-sync all mirror pairs to the new axis
+  // Re-sync all mirror pairs: the key to the left of the axis is the source
+  // (stays static), the key to the right moves.
   const l = get(layout);
-  const allLinkedIds = new Set(Object.keys(l.mirrorPairs));
-  if (allLinkedIds.size > 0) {
-    // Only sync one side of each pair (the "A" side where idA < idB)
-    const toSync = new Set<string>();
-    for (const [idA, idB] of Object.entries(l.mirrorPairs)) {
-      if (idA < idB) toSync.add(idA);
-    }
-    syncMirror(toSync);
+  const seen = new Set<string>();
+  const toSync = new Set<string>();
+  for (const [idA, idB] of Object.entries(l.mirrorPairs)) {
+    if (seen.has(idA)) continue;
+    seen.add(idA);
+    seen.add(idB);
+    const keyA = l.keys.find((k) => k.id === idA);
+    const keyB = l.keys.find((k) => k.id === idB);
+    if (!keyA || !keyB) continue;
+    const centerA = keyA.x + keyA.width / 2;
+    const centerB = keyB.x + keyB.width / 2;
+    // The key further to the left is the source (stays static)
+    toSync.add(centerA <= centerB ? idA : idB);
   }
+  if (toSync.size > 0) syncMirror(toSync);
+}
+
+// --- URL hash sync ---
+
+let _suppressHashUpdate = false;
+let _hashTimer: ReturnType<typeof setTimeout> | undefined;
+
+function updateHash(l: Layout) {
+  if (_suppressHashUpdate) return;
+  clearTimeout(_hashTimer);
+  _hashTimer = setTimeout(() => {
+    history.replaceState(null, '', '#' + serializeLayout(l));
+  }, 300);
+}
+
+/** Restore layout from URL hash (if present) and keep hash in sync with changes. */
+export function initUrlSync() {
+  const hash = window.location.hash.slice(1); // strip leading '#'
+  if (hash) {
+    const restored = deserializeLayout(hash);
+    if (restored) {
+      _suppressHashUpdate = true;
+      layout.set(restored);
+      // Clear undo history since this is a fresh load
+      past.length = 0;
+      future.length = 0;
+      syncFlags();
+      _suppressHashUpdate = false;
+    }
+  }
+
+  layout.subscribe((l) => updateHash(l));
 }
 

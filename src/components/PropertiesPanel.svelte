@@ -184,11 +184,11 @@
   <div class="settings-section">
     <h2>Settings</h2>
     <div class="field">
-      <label for="setting-min-gap">Min Gap (U)</label>
+      <label for="setting-min-gap">Min Gap (mm)</label>
       <input
         id="setting-min-gap"
         type="number"
-        step="0.05"
+        step="0.5"
         min="0"
         value={$minGap}
         oninput={(e) => {
