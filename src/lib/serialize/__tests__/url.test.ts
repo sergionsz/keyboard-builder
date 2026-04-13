@@ -20,6 +20,7 @@ function makeLayout(overrides: Partial<Layout> & { keys: Key[] }): Layout {
     name: overrides.name ?? 'Test',
     mirrorPairs: overrides.mirrorPairs ?? {},
     mirrorAxisX: overrides.mirrorAxisX ?? 0,
+    minGap: overrides.minGap ?? 0,
     ...overrides,
   };
 }

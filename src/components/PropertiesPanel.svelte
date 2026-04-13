@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { layout, updateKeysWithUndo, linkMirrorPair, unlinkMirrorPair } from '../stores/layout';
+  import { layout, updateKeysWithUndo, linkMirrorPair, unlinkMirrorPair, enforceMinGap } from '../stores/layout';
   import { selection, minGap } from '../stores/editor';
   import type { Key } from '../types';
 
@@ -197,6 +197,7 @@
         }}
       />
     </div>
+    <button class="apply-gap-btn" onclick={enforceMinGap} disabled={$minGap <= 0} title="Push keys apart to enforce the minimum gap">Apply Gap</button>
   </div>
 </aside>
 
@@ -309,6 +310,28 @@
 
   .mirror-partner {
     color: #ff9f4a;
+  }
+
+  .apply-gap-btn {
+    width: 100%;
+    background: #333;
+    color: #ccc;
+    border: 1px solid #444;
+    border-radius: 4px;
+    padding: 6px 10px;
+    font-size: 12px;
+    cursor: pointer;
+    font-family: inherit;
+  }
+
+  .apply-gap-btn:hover:not(:disabled) {
+    background: #444;
+    color: #fff;
+  }
+
+  .apply-gap-btn:disabled {
+    opacity: 0.4;
+    cursor: default;
   }
 
   .settings-section {

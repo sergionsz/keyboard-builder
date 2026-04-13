@@ -138,6 +138,11 @@ export function serializeLayout(layout: Layout): string {
     view.setFloat32(off, layout.mirrorAxisX, true); off += 4;
   }
 
+  // Min gap in mm * 100 (uint16), only if non-zero
+  if (layout.minGap > 0) {
+    view.setUint16(off, Math.round(layout.minGap * 100), true); off += 2;
+  }
+
   const raw = new Uint8Array(buf, 0, off);
   const compressed = deflateSync(raw, { level: 9 });
   return '2' + toBase64url(compressed);
@@ -217,7 +222,13 @@ function deserializeV2(b64: string): Layout | null {
     mirrorAxisX = view.getFloat32(off, true); off += 4;
   }
 
-  return { name, keys, mirrorPairs, mirrorAxisX };
+  // Min gap (trailing uint16, optional)
+  let minGap = 0;
+  if (off + 2 <= raw.byteLength) {
+    minGap = view.getUint16(off, true) / 100; off += 2;
+  }
+
+  return { name, keys, mirrorPairs, mirrorAxisX, minGap };
 }
 
 // ── v1 fallback (lz-string JSON) ────────────────────────────────────
@@ -281,5 +292,6 @@ function deserializeV1(hash: string): Layout | null {
     keys,
     mirrorPairs,
     mirrorAxisX: data.ax ?? 0,
+    minGap: 0,
   };
 }

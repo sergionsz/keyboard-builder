@@ -15,4 +15,6 @@ export interface Layout {
   mirrorPairs: Record<string, string>;
   /** X position of the mirror axis in U-space (computed from the first linked pair) */
   mirrorAxisX: number;
+  /** Minimum gap between keys in mm (0 = disabled) */
+  minGap: number;
 }
