@@ -2,8 +2,8 @@
   import { layout, moveKey, moveKeys, updateKeys, addKey, deleteKeys, beginContinuous, endContinuous, undo, redo, setMirrorAxisX, linkMirrorPair, unlinkMirrorPair } from '../stores/layout';
   import { pan, zoom, spaceHeld, drag, gridSnap, minGap, selection, rotating } from '../stores/editor';
   import { SCALE, screenToCanvas, canvasPxToU } from '../lib/coords';
-  import { snapToGrid, snapAngle } from '../lib/snap';
-  import { wouldViolateGap } from '../lib/collision';
+  import { snapToGrid, snapAngle, roundPos, roundRot } from '../lib/snap';
+  import { wouldViolateGap, keysOverlap } from '../lib/collision';
   import type { Key } from '../types';
   import KeyShape from './KeyShape.svelte';
   import SelectionHandles from './SelectionHandles.svelte';
@@ -60,6 +60,11 @@
 
   // --- Mirror axis dragging ---
   let isDraggingAxis = $state(false);
+
+  // --- Marquee selection ---
+  let isMarquee = $state(false);
+  let marqueeStartU = $state({ x: 0, y: 0 });
+  let marqueeEndU = $state({ x: 0, y: 0 });
 
   // Track whether a drag actually moved, to distinguish click from drag
   let didDrag = $state(false);
@@ -171,13 +176,26 @@
       return;
     }
 
-    // Left click on empty canvas → deselect all
+    // Left click on empty canvas → start marquee selection
     if (e.button === 0 && !$spaceHeld) {
-      selection.set(new Set());
+      const screenPt = eventToSvgScreen(e);
+      const canvasPt = screenToCanvas(screenPt, $pan, $zoom);
+      const posU = canvasPxToU(canvasPt);
+      isMarquee = true;
+      marqueeStartU = posU;
+      marqueeEndU = posU;
+      svgEl.setPointerCapture(e.pointerId);
     }
   }
 
   function onPointerMove(e: PointerEvent) {
+    if (isMarquee) {
+      const screenPt = eventToSvgScreen(e);
+      const canvasPt = screenToCanvas(screenPt, $pan, $zoom);
+      marqueeEndU = canvasPxToU(canvasPt);
+      return;
+    }
+
     if (isPanning) {
       const dx = e.clientX - panStart.x;
       const dy = e.clientY - panStart.y;
@@ -191,7 +209,7 @@
       const canvasPt = screenToCanvas(screenPt, $pan, $zoom);
       const posU = canvasPxToU(canvasPt);
       const snap = $gridSnap;
-      const newX = snap > 0 && e.shiftKey ? snapToGrid(posU.x, snap) : posU.x;
+      const newX = snap > 0 && e.shiftKey ? snapToGrid(posU.x, snap) : roundPos(posU.x);
       setMirrorAxisX(newX);
       return;
     }
@@ -215,8 +233,8 @@
         newRotation = snapAngle(newRotation, 15);
       }
 
-      // Normalize to -180..180
-      newRotation = ((newRotation + 180) % 360 + 360) % 360 - 180;
+      // Normalize to -180..180 and round
+      newRotation = roundRot(((newRotation + 180) % 360 + 360) % 360 - 180);
 
       const sel = $selection;
       const rotGap = $minGap / MM_PER_U;
@@ -257,8 +275,8 @@
       const canvasPt = screenToCanvas(screenPt, $pan, $zoom);
       const mousePosU = canvasPxToU(canvasPt);
 
-      let newX = mousePosU.x - dragState.offsetU.x;
-      let newY = mousePosU.y - dragState.offsetU.y;
+      let newX = roundPos(mousePosU.x - dragState.offsetU.x);
+      let newY = roundPos(mousePosU.y - dragState.offsetU.y);
 
       const snap = $gridSnap;
       if (snap > 0 && e.shiftKey) {
@@ -300,6 +318,33 @@
   }
 
   function onPointerUp(e: PointerEvent) {
+    if (isMarquee) {
+      isMarquee = false;
+      svgEl.releasePointerCapture(e.pointerId);
+
+      const left = Math.min(marqueeStartU.x, marqueeEndU.x);
+      const top = Math.min(marqueeStartU.y, marqueeEndU.y);
+      const w = Math.max(marqueeEndU.x, marqueeStartU.x) - left;
+      const h = Math.max(marqueeEndU.y, marqueeStartU.y) - top;
+
+      // Tiny marquee = just a click → deselect
+      if (w < 0.05 && h < 0.05) {
+        if (!e.shiftKey) selection.set(new Set());
+        return;
+      }
+
+      // Use SAT overlap test: treat marquee as an axis-aligned key
+      const marqueeKey: Key = { id: '', x: left, y: top, width: w, height: h, rotation: 0, label: '' };
+      const selected = e.shiftKey ? new Set($selection) : new Set<string>();
+      for (const key of $layout.keys) {
+        if (keysOverlap(marqueeKey, key, 0)) {
+          selected.add(key.id);
+        }
+      }
+      selection.set(selected);
+      return;
+    }
+
     if (isPanning) {
       isPanning = false;
       svgEl.releasePointerCapture(e.pointerId);
@@ -385,8 +430,8 @@
       const posU = canvasPxToU(canvasPt);
       // Snap to grid
       const snap = $gridSnap;
-      const x = snap > 0 ? snapToGrid(posU.x, snap) : posU.x;
-      const y = snap > 0 ? snapToGrid(posU.y, snap) : posU.y;
+      const x = snap > 0 ? snapToGrid(posU.x, snap) : roundPos(posU.x);
+      const y = snap > 0 ? snapToGrid(posU.y, snap) : roundPos(posU.y);
       const newId = addKey(x, y);
       selection.set(new Set([newId]));
       return;
@@ -404,6 +449,29 @@
         } else {
           linkMirrorPair(ids[0], ids[1]);
         }
+      }
+      return;
+    }
+
+    // Arrow keys → move selected keys
+    if (e.code === 'ArrowLeft' || e.code === 'ArrowRight' || e.code === 'ArrowUp' || e.code === 'ArrowDown') {
+      const sel = $selection;
+      if (sel.size > 0) {
+        e.preventDefault();
+        const step = $gridSnap > 0 ? $gridSnap : 0.1;
+        const dx = e.code === 'ArrowLeft' ? -step : e.code === 'ArrowRight' ? step : 0;
+        const dy = e.code === 'ArrowUp' ? -step : e.code === 'ArrowDown' ? step : 0;
+
+        const gap = $minGap / MM_PER_U;
+        if (gap > 0) {
+          const allKeys = $layout.keys;
+          const movedKeys = allKeys
+            .filter((k) => sel.has(k.id))
+            .map((k) => ({ ...k, x: k.x + dx, y: k.y + dy }));
+          const [allMoved, others] = buildGapCheckSets(movedKeys, allKeys, $layout.mirrorPairs);
+          if (wouldViolateGap(allMoved, others, gap)) return;
+        }
+        moveKeys(sel, dx, dy);
       }
       return;
     }
@@ -438,6 +506,7 @@
   class:panning={isPanning || $spaceHeld}
   class:dragging={$drag !== null}
   class:rotating={$rotating !== null}
+  class:selecting={isMarquee}
   xmlns="http://www.w3.org/2000/svg"
   onpointerdown={onPointerDown}
   onpointermove={onPointerMove}
@@ -514,6 +583,20 @@
     {#each $layout.keys.filter((k) => $selection.has(k.id)) as key (key.id)}
       <SelectionHandles {key} {onRotateStart} />
     {/each}
+
+    {#if isMarquee}
+      {@const left = Math.min(marqueeStartU.x, marqueeEndU.x) * SCALE}
+      {@const top = Math.min(marqueeStartU.y, marqueeEndU.y) * SCALE}
+      {@const w = Math.abs(marqueeEndU.x - marqueeStartU.x) * SCALE}
+      {@const h = Math.abs(marqueeEndU.y - marqueeStartU.y) * SCALE}
+      <rect
+        x={left} y={top} width={w} height={h}
+        fill="rgba(74, 158, 255, 0.08)"
+        stroke="#4a9eff"
+        stroke-width={1 / $zoom}
+        pointer-events="none"
+      />
+    {/if}
   </g>
 </svg>
 
@@ -536,6 +619,10 @@
 
   .canvas.rotating {
     cursor: grabbing;
+  }
+
+  .canvas.selecting {
+    cursor: crosshair;
   }
 
   .axis-handle {

@@ -2,6 +2,9 @@ import { writable, get } from 'svelte/store';
 import type { Key, Layout } from '../types';
 import { uuid } from '../lib/uuid';
 import { serializeLayout, deserializeLayout } from '../lib/serialize/url';
+import { roundPos } from '../lib/snap';
+import { computeMTV, computePullCorrection } from '../lib/collision';
+import { minGap } from './editor';
 
 /** Sample layout: a basic 60% first row to demonstrate rendering */
 function createSampleLayout(): Layout {
@@ -77,6 +80,7 @@ function createSampleLayout(): Layout {
     ],
     mirrorPairs: {},
     mirrorAxisX: 0,
+    minGap: 0,
   };
 }
 
@@ -303,6 +307,108 @@ export function unlinkMirrorPair(keyId: string) {
   });
 }
 
+/**
+ * Adjust all keys so each key has exactly the configured min gap from its
+ * neighbors. Pushes apart if too close, pulls together if too far.
+ *
+ * Phase 1: Push apart using MTV (iterative relaxation).
+ * Phase 2: Pull together using pair-based corrections with damping,
+ *          only for direct neighbors (no key between them).
+ *
+ * Mirror partners are re-synced after all adjustments.
+ */
+export function enforceMinGap() {
+  const gap = get(minGap);
+  if (gap <= 0) return;
+
+  const l = get(layout);
+  if (l.keys.length < 2) return;
+
+  const MM_PER_U = 19.05;
+  const gapU = gap / MM_PER_U;
+
+  // Work on mutable copies
+  const keys = l.keys.map((k) => ({ ...k }));
+  let changed = false;
+
+  // Phase 1: Push apart (Gauss-Seidel: apply each correction immediately)
+  for (let iter = 0; iter < 100; iter++) {
+    let maxDelta = 0;
+    for (let i = 0; i < keys.length; i++) {
+      for (let j = i + 1; j < keys.length; j++) {
+        const mtv = computeMTV(keys[i], keys[j], gapU);
+        if (!mtv) continue;
+        const mag = Math.sqrt(mtv.x * mtv.x + mtv.y * mtv.y);
+        if (mag > maxDelta) maxDelta = mag;
+        // Split MTV: move each key half the distance
+        keys[i].x = roundPos(keys[i].x - mtv.x / 2);
+        keys[i].y = roundPos(keys[i].y - mtv.y / 2);
+        keys[j].x = roundPos(keys[j].x + mtv.x / 2);
+        keys[j].y = roundPos(keys[j].y + mtv.y / 2);
+      }
+    }
+    if (maxDelta < 0.001) break;
+    changed = true;
+  }
+
+  // Phase 2: Pull together (only direct close neighbors, with damping)
+  const DAMPING = 0.15;
+  for (let iter = 0; iter < 60; iter++) {
+    let maxDelta = 0;
+    for (let i = 0; i < keys.length; i++) {
+      for (let j = i + 1; j < keys.length; j++) {
+        const corr = computePullCorrection(keys[i], keys[j], gapU, keys);
+        if (!corr) continue;
+        const mag = Math.sqrt(corr.x * corr.x + corr.y * corr.y);
+        if (mag > maxDelta) maxDelta = mag;
+        // Split correction: both keys move toward each other
+        const dx = corr.x * DAMPING * 0.5;
+        const dy = corr.y * DAMPING * 0.5;
+        keys[i].x = roundPos(keys[i].x - dx);
+        keys[i].y = roundPos(keys[i].y - dy);
+        keys[j].x = roundPos(keys[j].x + dx);
+        keys[j].y = roundPos(keys[j].y + dy);
+      }
+    }
+    if (maxDelta < 0.001) break;
+    changed = true;
+
+    // Re-run push-apart after each pull iteration to prevent overlaps
+    for (let i = 0; i < keys.length; i++) {
+      for (let j = i + 1; j < keys.length; j++) {
+        const mtv = computeMTV(keys[i], keys[j], gapU);
+        if (!mtv) continue;
+        keys[i].x = roundPos(keys[i].x - mtv.x / 2);
+        keys[i].y = roundPos(keys[i].y - mtv.y / 2);
+        keys[j].x = roundPos(keys[j].x + mtv.x / 2);
+        keys[j].y = roundPos(keys[j].y + mtv.y / 2);
+      }
+    }
+  }
+
+  if (!changed) return;
+
+  pushUndo();
+  layout.set({ ...l, keys });
+
+  // Re-sync mirror partners
+  const pairs = l.mirrorPairs;
+  const seen = new Set<string>();
+  const toSync = new Set<string>();
+  for (const [idA, idB] of Object.entries(pairs)) {
+    if (seen.has(idA)) continue;
+    seen.add(idA);
+    seen.add(idB);
+    const keyA = keys.find((k) => k.id === idA);
+    const keyB = keys.find((k) => k.id === idB);
+    if (!keyA || !keyB) continue;
+    const centerA = keyA.x + keyA.width / 2;
+    const centerB = keyB.x + keyB.width / 2;
+    toSync.add(centerA <= centerB ? idA : idB);
+  }
+  if (toSync.size > 0) syncMirror(toSync);
+}
+
 /** Move the mirror axis to a new X position (in U). No undo push; for use during drag. */
 export function setMirrorAxisX(x: number) {
   layout.update((l) => ({ ...l, mirrorAxisX: x }));
@@ -347,6 +453,7 @@ export function initUrlSync() {
     if (restored) {
       _suppressHashUpdate = true;
       layout.set(restored);
+      minGap.set(restored.minGap);
       // Clear undo history since this is a fresh load
       past.length = 0;
       future.length = 0;
@@ -354,6 +461,14 @@ export function initUrlSync() {
       _suppressHashUpdate = false;
     }
   }
+
+  // Keep layout.minGap in sync with the editor minGap store
+  minGap.subscribe((val) => {
+    const l = get(layout);
+    if (l.minGap !== val) {
+      layout.update((prev) => ({ ...prev, minGap: val }));
+    }
+  });
 
   layout.subscribe((l) => updateHash(l));
 }

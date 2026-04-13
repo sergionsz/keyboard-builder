@@ -7,3 +7,13 @@ export function snapToGrid(value: number, gridSize: number): number {
 export function snapAngle(degrees: number, increment: number): number {
   return Math.round(degrees / increment) * increment;
 }
+
+/** Round a position value to 2 decimal places (matches serialization precision) */
+export function roundPos(value: number): number {
+  return Math.round(value * 100) / 100;
+}
+
+/** Round a rotation value to 1 decimal place (matches serialization precision) */
+export function roundRot(value: number): number {
+  return Math.round(value * 10) / 10;
+}

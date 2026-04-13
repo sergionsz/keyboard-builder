@@ -8,7 +8,7 @@ export const zoom = writable(1);
 export const spaceHeld = writable(false);
 
 /** Snap-to-grid increment in U (0 = disabled) */
-export const gridSnap = writable(0.25);
+export const gridSnap = writable(0.1);
 
 /** Minimum gap between keys in mm (0 = disabled) */
 export const minGap = writable(0);
