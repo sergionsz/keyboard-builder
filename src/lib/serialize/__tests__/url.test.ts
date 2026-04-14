@@ -21,6 +21,7 @@ function makeLayout(overrides: Partial<Layout> & { keys: Key[] }): Layout {
     mirrorPairs: overrides.mirrorPairs ?? {},
     mirrorAxisX: overrides.mirrorAxisX ?? 0,
     minGap: overrides.minGap ?? 0,
+    matrixOverrides: overrides.matrixOverrides ?? {},
     ...overrides,
   };
 }
@@ -49,7 +50,7 @@ describe('URL serialize/deserialize (v2 binary)', () => {
       ],
     });
     const hash = serializeLayout(layout);
-    expect(hash.charAt(0)).toBe('2'); // v2 prefix
+    expect(hash.charAt(0)).toBe('3'); // v3 prefix
     const restored = deserializeLayout(hash);
     expect(restored).not.toBeNull();
     expect(restored!.name).toBe('My Board');

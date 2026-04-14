@@ -1,14 +1,20 @@
 <script lang="ts">
   import type { Key } from '../types';
   import { SCALE } from '../lib/coords';
+  import type { MatrixAssignment } from '../lib/matrix';
 
   const GAP = 2;    // px gap between key border and edge of cell
 
-  let { key, selected = false, linked = false, aligned = false, onDragStart }: {
+  let { key, selected = false, linked = false, aligned = false, schematic = false, matrixCell, focusCols = false, groupColor, hasError = false, onDragStart }: {
     key: Key;
     selected?: boolean;
     linked?: boolean;
     aligned?: boolean;
+    schematic?: boolean;
+    matrixCell?: MatrixAssignment;
+    focusCols?: boolean;
+    groupColor?: string;
+    hasError?: boolean;
     onDragStart?: (keyId: string, e: PointerEvent) => void;
   } = $props();
 
@@ -90,13 +96,57 @@
       {bottomLabel}
     </text>
   {/if}
-  {#if linked}
+  {#if linked && !schematic}
     <circle
       cx={cx + w - GAP - 5}
       cy={cy + GAP + 5}
       r="3"
       fill="#ff9f4a"
       opacity="0.85"
+      pointer-events="none"
+    />
+  {/if}
+  {#if schematic && matrixCell && groupColor}
+    <!-- Focused group color overlay -->
+    <rect
+      x={cx + GAP}
+      y={cy + GAP}
+      width={w - GAP * 2}
+      height={h - GAP * 2}
+      rx="4"
+      ry="4"
+      fill={groupColor}
+      opacity="0.25"
+      pointer-events="none"
+    />
+    <!-- Matrix position label (focused dimension first) -->
+    <text
+      x={cx + w / 2}
+      y={cy + h / 2 + 1}
+      text-anchor="middle"
+      dominant-baseline="middle"
+      font-size="13"
+      font-weight="700"
+      fill={groupColor}
+      pointer-events="none"
+      class="matrix-label"
+    >
+      {focusCols ? `C${matrixCell.col}R${matrixCell.row}` : `R${matrixCell.row}C${matrixCell.col}`}
+    </text>
+  {/if}
+  {#if hasError}
+    <!-- Duplicate position error highlight -->
+    <rect
+      x={cx + GAP - 1}
+      y={cy + GAP - 1}
+      width={w - GAP * 2 + 2}
+      height={h - GAP * 2 + 2}
+      rx="5"
+      ry="5"
+      fill="none"
+      stroke="#ff4444"
+      stroke-width="2"
+      stroke-dasharray="4 2"
       pointer-events="none"
     />
   {/if}
@@ -146,6 +196,11 @@
     font-size: 11px;
     fill: #333;
     pointer-events: none;
+    user-select: none;
+  }
+
+  .matrix-label {
+    font-family: 'JetBrains Mono', 'SF Mono', 'Consolas', monospace;
     user-select: none;
   }
 </style>

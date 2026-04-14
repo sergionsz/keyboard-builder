@@ -7,6 +7,60 @@
   import type { Key } from '../types';
   import KeyShape from './KeyShape.svelte';
   import SelectionHandles from './SelectionHandles.svelte';
+  import { editorMode, schematicFocus, matrix, matrixErrors, primaryColor, secondaryColor } from '../stores/schematic';
+  import type { MatrixAssignment } from '../lib/matrix';
+
+  // Build row and column wire paths for schematic mode
+  let rowWires = $derived.by(() => {
+    if ($editorMode !== 'schematic') return [];
+    const groups = new Map<number, { cx: number; cy: number }[]>();
+    for (const key of $layout.keys) {
+      const cell = $matrix[key.id];
+      if (!cell) continue;
+      if (!groups.has(cell.row)) groups.set(cell.row, []);
+      groups.get(cell.row)!.push({
+        cx: (key.x + key.width / 2) * SCALE,
+        cy: (key.y + key.height / 2) * SCALE,
+      });
+    }
+    const wires: { row: number; points: string }[] = [];
+    for (const [row, pts] of groups) {
+      pts.sort((a, b) => a.cx - b.cx);
+      if (pts.length < 2) continue;
+      wires.push({ row, points: pts.map((p) => `${p.cx},${p.cy}`).join(' ') });
+    }
+    return wires;
+  });
+
+  let colWires = $derived.by(() => {
+    if ($editorMode !== 'schematic') return [];
+    const groups = new Map<number, { cx: number; cy: number }[]>();
+    for (const key of $layout.keys) {
+      const cell = $matrix[key.id];
+      if (!cell) continue;
+      if (!groups.has(cell.col)) groups.set(cell.col, []);
+      groups.get(cell.col)!.push({
+        cx: (key.x + key.width / 2) * SCALE,
+        cy: (key.y + key.height / 2) * SCALE,
+      });
+    }
+    const wires: { col: number; points: string }[] = [];
+    for (const [col, pts] of groups) {
+      pts.sort((a, b) => a.cy - b.cy);
+      if (pts.length < 2) continue;
+      wires.push({ col, points: pts.map((p) => `${p.cx},${p.cy}`).join(' ') });
+    }
+    return wires;
+  });
+
+  // Keys with duplicate (row,col) assignments
+  let errorKeyIds = $derived.by(() => {
+    const ids = new Set<string>();
+    for (const dupeIds of $matrixErrors.values()) {
+      for (const id of dupeIds) ids.add(id);
+    }
+    return ids;
+  });
 
   const MM_PER_U = 19.05;
 
@@ -122,6 +176,9 @@
       selection.set(new Set([keyId]));
     }
     // else: key already selected, keep selection for potential multi-drag
+
+    // In schematic mode, only allow selection, not dragging
+    if ($editorMode === 'schematic') return;
 
     didDrag = false;
     clickContext = { keyId, shiftKey: e.shiftKey };
@@ -447,8 +504,8 @@
       return;
     }
 
-    // Delete / Backspace → delete selected keys
-    if (e.code === 'Delete' || e.code === 'Backspace') {
+    // Delete / Backspace → delete selected keys (layout mode only)
+    if ((e.code === 'Delete' || e.code === 'Backspace') && $editorMode === 'layout') {
       const sel = $selection;
       if (sel.size > 0) {
         e.preventDefault();
@@ -458,8 +515,8 @@
       return;
     }
 
-    // N → add new key (at canvas center)
-    if (e.code === 'KeyN' && !e.ctrlKey && !e.metaKey) {
+    // N → add new key (at canvas center, layout mode only)
+    if (e.code === 'KeyN' && !e.ctrlKey && !e.metaKey && $editorMode === 'layout') {
       e.preventDefault();
       const rect = svgEl.getBoundingClientRect();
       const centerScreen = { x: rect.width / 2, y: rect.height / 2 };
@@ -562,6 +619,7 @@
 <!-- svelte-ignore a11y_no_static_element_interactions -->
 <svg
   bind:this={svgEl}
+  id="keyboard-canvas"
   class="canvas"
   class:panning={isPanning || $spaceHeld}
   class:dragging={$drag !== null}
@@ -636,6 +694,32 @@
       {/if}
     {/each}
 
+    <!-- Schematic mode: row and column wires -->
+    {#if $editorMode === 'schematic'}
+      {@const focusRows = $schematicFocus === 'rows'}
+      <!-- Background wires (unfocused dimension): thin, dashed, faded -->
+      {#each focusRows ? colWires : rowWires as wire}
+        <polyline
+          points={wire.points}
+          fill="none"
+          stroke={secondaryColor('col' in wire ? wire.col : wire.row, 0.25)}
+          stroke-width={1.5 / $zoom}
+          stroke-dasharray="{6 / $zoom} {3 / $zoom}"
+          pointer-events="none"
+        />
+      {/each}
+      <!-- Foreground wires (focused dimension): thick, solid, vivid -->
+      {#each focusRows ? rowWires : colWires as wire}
+        <polyline
+          points={wire.points}
+          fill="none"
+          stroke={primaryColor('row' in wire ? wire.row : wire.col, 0.6)}
+          stroke-width={2.5 / $zoom}
+          pointer-events="none"
+        />
+      {/each}
+    {/if}
+
     <!-- Alignment group lines (shown when a member key is selected) -->
     {#each $layout.alignmentGroups as group (group.id)}
       {@const hasSelectedMember = group.keyIds.some((id) => $selection.has(id))}
@@ -665,7 +749,20 @@
     {/each}
 
     {#each $layout.keys as key (key.id)}
-      <KeyShape {key} selected={$selection.has(key.id)} linked={!!$layout.mirrorPairs[key.id]} aligned={alignedKeyIds.has(key.id)} onDragStart={onKeyDragStart} />
+      {@const cell = $matrix[key.id]}
+      {@const focusIdx = cell ? ($schematicFocus === 'rows' ? cell.row : cell.col) : undefined}
+      <KeyShape
+        {key}
+        selected={$selection.has(key.id)}
+        linked={!!$layout.mirrorPairs[key.id]}
+        aligned={alignedKeyIds.has(key.id)}
+        schematic={$editorMode === 'schematic'}
+        matrixCell={cell}
+        focusCols={$schematicFocus === 'cols'}
+        groupColor={focusIdx !== undefined ? primaryColor(focusIdx) : undefined}
+        hasError={errorKeyIds.has(key.id)}
+        onDragStart={onKeyDragStart}
+      />
     {/each}
     <!-- Rotation handle for selected keys -->
     {#each $layout.keys.filter((k) => $selection.has(k.id)) as key (key.id)}

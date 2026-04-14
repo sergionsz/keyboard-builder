@@ -81,6 +81,7 @@ function createSampleLayout(): Layout {
     mirrorPairs: {},
     mirrorAxisX: 0,
     minGap: 0,
+    matrixOverrides: {},
     alignmentGroups: [],
   };
 }
@@ -90,6 +91,7 @@ function deepClone(layout: Layout): Layout {
     ...layout,
     keys: layout.keys.map((k) => ({ ...k })),
     mirrorPairs: { ...layout.mirrorPairs },
+    matrixOverrides: { ...layout.matrixOverrides },
     alignmentGroups: layout.alignmentGroups.map((g) => ({ ...g, keyIds: [...g.keyIds] })),
   };
 }
@@ -191,6 +193,14 @@ function pushUndo() {
   if (past.length > MAX_HISTORY) past.shift();
   future.length = 0;
   syncFlags();
+}
+
+/** Exposed for use by other stores (e.g. schematic) that need to push undo before mutating */
+export const pushUndoExported = pushUndo;
+
+/** Update a single field on the layout (for use by other stores) */
+export function updateLayoutField<K extends keyof Layout>(field: K, value: Layout[K]) {
+  layout.update((l) => ({ ...l, [field]: value }));
 }
 
 export function undo() {

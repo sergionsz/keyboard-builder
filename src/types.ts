@@ -24,6 +24,8 @@ export interface Layout {
   mirrorAxisX: number;
   /** Minimum gap between keys in mm (0 = disabled) */
   minGap: number;
+  /** Manual matrix overrides: key ID → {row, col}. Auto-assigned keys have no entry. */
+  matrixOverrides: Record<string, { row: number; col: number }>;
   /** Alignment groups that lock keys to shared coordinates */
   alignmentGroups: AlignmentGroup[];
 }
