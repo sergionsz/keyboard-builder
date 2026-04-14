@@ -147,7 +147,11 @@
               <tr><td><kbd>Ctrl+Z</kbd> / <kbd>&#8984;Z</kbd></td><td>Undo</td></tr>
               <tr><td><kbd>Ctrl+Shift+Z</kbd> / <kbd>&#8984;&#8679;Z</kbd></td><td>Redo</td></tr>
               <tr><td><kbd>M</kbd></td><td>Link / unlink selected pair as mirror</td></tr>
+              <tr><td><kbd>H</kbd></td><td>Create horizontal alignment group (lock Y) from selected keys</td></tr>
+              <tr><td><kbd>V</kbd></td><td>Create vertical alignment group (lock X) from selected keys</td></tr>
+              <tr><td><kbd>Arrow keys</kbd></td><td>Move selected keys by grid step (or 0.1U)</td></tr>
               <tr><td><kbd>Space</kbd> + drag</td><td>Pan the canvas</td></tr>
+              <tr><td><kbd>Alt</kbd> (hold)</td><td>Disable snap guides while dragging</td></tr>
             </tbody>
           </table>
         </section>
@@ -156,7 +160,9 @@
           <table>
             <tbody>
               <tr><td>Click</td><td>Select a key</td></tr>
+              <tr><td>Shift + click</td><td>Toggle key in selection</td></tr>
               <tr><td>Click + drag</td><td>Move selected keys</td></tr>
+              <tr><td>Shift + drag</td><td>Snap to grid while moving or rotating</td></tr>
               <tr><td>Drag on empty area</td><td>Box select</td></tr>
               <tr><td>Scroll wheel</td><td>Zoom in/out</td></tr>
               <tr><td>Rotation handle</td><td>Rotate selected key</td></tr>

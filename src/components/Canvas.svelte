@@ -1,8 +1,8 @@
 <script lang="ts">
-  import { layout, moveKey, moveKeys, updateKeys, addKey, deleteKeys, beginContinuous, endContinuous, undo, redo, setMirrorAxisX, linkMirrorPair, unlinkMirrorPair } from '../stores/layout';
-  import { pan, zoom, spaceHeld, drag, gridSnap, minGap, selection, rotating } from '../stores/editor';
+  import { layout, moveKey, moveKeys, updateKeys, addKey, deleteKeys, beginContinuous, endContinuous, undo, redo, setMirrorAxisX, linkMirrorPair, unlinkMirrorPair, createAlignmentGroup } from '../stores/layout';
+  import { pan, zoom, spaceHeld, altHeld, drag, gridSnap, minGap, selection, rotating } from '../stores/editor';
   import { SCALE, screenToCanvas, canvasPxToU } from '../lib/coords';
-  import { snapToGrid, snapAngle, roundPos, roundRot } from '../lib/snap';
+  import { snapToGrid, snapAngle, roundPos, roundRot, computeAlignmentGuides, applyGuideSnap, type AlignmentGuide } from '../lib/snap';
   import { wouldViolateGap, keysOverlap } from '../lib/collision';
   import type { Key } from '../types';
   import KeyShape from './KeyShape.svelte';
@@ -126,6 +126,22 @@
   let clickContext = $state<{ keyId: string; shiftKey: boolean } | null>(null);
   // Last snapped position during multi-key drag (for computing deltas)
   let lastSnappedU = $state({ x: 0, y: 0 });
+
+  // Active alignment guides (shown during drag)
+  let activeGuides = $state<AlignmentGuide[]>([]);
+
+  // Keys that share an alignment group with any selected key (for visual highlighting)
+  let alignedKeyIds = $derived.by(() => {
+    const sel = $selection;
+    if (sel.size === 0) return new Set<string>();
+    const ids = new Set<string>();
+    for (const group of $layout.alignmentGroups) {
+      if (group.keyIds.some((id) => sel.has(id))) {
+        for (const id of group.keyIds) ids.add(id);
+      }
+    }
+    return ids;
+  });
 
   /** Convert a PointerEvent to SVG-relative screen coords */
   function eventToSvgScreen(e: PointerEvent): { x: number; y: number } {
@@ -343,6 +359,21 @@
 
       const sel = $selection;
       const gap = $minGap / MM_PER_U;
+      const key = $layout.keys.find((k) => k.id === dragState.keyId);
+
+      // Compute alignment guides
+      if (key) {
+        const candidateKey = { ...key, x: newX, y: newY };
+        const guides = computeAlignmentGuides(candidateKey, $layout.keys, sel, $zoom);
+        activeGuides = guides;
+
+        // Apply snap if Alt is not held
+        if (!$altHeld && guides.length > 0) {
+          const snapped = applyGuideSnap(newX, newY, key.width, key.height, guides);
+          newX = snapped.x;
+          newY = snapped.y;
+        }
+      }
 
       if (sel.size > 1 && sel.has(dragState.keyId)) {
         // Multi-key drag: move all selected keys by the delta
@@ -362,7 +393,6 @@
         }
       } else {
         if (gap > 0) {
-          const key = $layout.keys.find((k) => k.id === dragState.keyId);
           if (key) {
             const movedKey = { ...key, x: newX, y: newY };
             const [allMoved, others] = buildGapCheckSets([movedKey], $layout.keys, $layout.mirrorPairs);
@@ -433,6 +463,7 @@
       if (didDrag) endContinuous();
       drag.set(null);
       clickContext = null;
+      activeGuides = [];
       svgEl.releasePointerCapture(e.pointerId);
     }
   }
@@ -464,6 +495,12 @@
     if (e.code === 'Space' && !e.repeat) {
       e.preventDefault();
       spaceHeld.set(true);
+      return;
+    }
+
+    if (e.key === 'Alt' && !e.repeat) {
+      e.preventDefault();
+      altHeld.set(true);
       return;
     }
 
@@ -510,6 +547,26 @@
       return;
     }
 
+    // H → create horizontal alignment group (lock Y) from selected keys
+    if (e.code === 'KeyH' && !e.ctrlKey && !e.metaKey) {
+      const sel = $selection;
+      if (sel.size >= 2) {
+        e.preventDefault();
+        createAlignmentGroup(sel, 'y');
+      }
+      return;
+    }
+
+    // V → create vertical alignment group (lock X) from selected keys
+    if (e.code === 'KeyV' && !e.ctrlKey && !e.metaKey) {
+      const sel = $selection;
+      if (sel.size >= 2) {
+        e.preventDefault();
+        createAlignmentGroup(sel, 'x');
+      }
+      return;
+    }
+
     // Arrow keys → move selected keys
     if (e.code === 'ArrowLeft' || e.code === 'ArrowRight' || e.code === 'ArrowUp' || e.code === 'ArrowDown') {
       const sel = $selection;
@@ -548,6 +605,9 @@
   function onKeyUp(e: KeyboardEvent) {
     if (e.code === 'Space') {
       spaceHeld.set(false);
+    }
+    if (e.key === 'Alt') {
+      altHeld.set(false);
     }
   }
 
@@ -660,6 +720,34 @@
       {/each}
     {/if}
 
+    <!-- Alignment group lines (shown when a member key is selected) -->
+    {#each $layout.alignmentGroups as group (group.id)}
+      {@const hasSelectedMember = group.keyIds.some((id) => $selection.has(id))}
+      {#if hasSelectedMember}
+        {#if group.axis === 'y'}
+          <line
+            x1={-10000} y1={group.value * SCALE}
+            x2={10000} y2={group.value * SCALE}
+            stroke="#4aff88"
+            stroke-width={1 / $zoom}
+            stroke-dasharray="{6 / $zoom} {3 / $zoom}"
+            opacity="0.2"
+            pointer-events="none"
+          />
+        {:else}
+          <line
+            x1={group.value * SCALE} y1={-10000}
+            x2={group.value * SCALE} y2={10000}
+            stroke="#4aff88"
+            stroke-width={1 / $zoom}
+            stroke-dasharray="{6 / $zoom} {3 / $zoom}"
+            opacity="0.2"
+            pointer-events="none"
+          />
+        {/if}
+      {/if}
+    {/each}
+
     {#each $layout.keys as key (key.id)}
       {@const cell = $matrix[key.id]}
       {@const focusIdx = cell ? ($schematicFocus === 'rows' ? cell.row : cell.col) : undefined}
@@ -667,6 +755,7 @@
         {key}
         selected={$selection.has(key.id)}
         linked={!!$layout.mirrorPairs[key.id]}
+        aligned={alignedKeyIds.has(key.id)}
         schematic={$editorMode === 'schematic'}
         matrixCell={cell}
         focusCols={$schematicFocus === 'cols'}
@@ -678,6 +767,31 @@
     <!-- Rotation handle for selected keys -->
     {#each $layout.keys.filter((k) => $selection.has(k.id)) as key (key.id)}
       <SelectionHandles {key} {onRotateStart} />
+    {/each}
+
+    <!-- Snap alignment guides -->
+    {#each activeGuides as guide}
+      {#if guide.axis === 'x'}
+        <line
+          x1={guide.value * SCALE} y1={-10000}
+          x2={guide.value * SCALE} y2={10000}
+          stroke="#4aff88"
+          stroke-width={1 / $zoom}
+          stroke-dasharray="{4 / $zoom} {3 / $zoom}"
+          opacity={$altHeld ? 0.15 : 0.4}
+          pointer-events="none"
+        />
+      {:else}
+        <line
+          x1={-10000} y1={guide.value * SCALE}
+          x2={10000} y2={guide.value * SCALE}
+          stroke="#4aff88"
+          stroke-width={1 / $zoom}
+          stroke-dasharray="{4 / $zoom} {3 / $zoom}"
+          opacity={$altHeld ? 0.15 : 0.4}
+          pointer-events="none"
+        />
+      {/if}
     {/each}
 
     {#if isMarquee}

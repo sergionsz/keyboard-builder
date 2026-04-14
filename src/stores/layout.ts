@@ -1,5 +1,5 @@
 import { writable, get } from 'svelte/store';
-import type { Key, Layout } from '../types';
+import type { Key, Layout, AlignmentGroup } from '../types';
 import { uuid } from '../lib/uuid';
 import { serializeLayout, deserializeLayout } from '../lib/serialize/url';
 import { roundPos } from '../lib/snap';
@@ -82,6 +82,7 @@ function createSampleLayout(): Layout {
     mirrorAxisX: 0,
     minGap: 0,
     matrixOverrides: {},
+    alignmentGroups: [],
   };
 }
 
@@ -91,6 +92,7 @@ function deepClone(layout: Layout): Layout {
     keys: layout.keys.map((k) => ({ ...k })),
     mirrorPairs: { ...layout.mirrorPairs },
     matrixOverrides: { ...layout.matrixOverrides },
+    alignmentGroups: layout.alignmentGroups.map((g) => ({ ...g, keyIds: [...g.keyIds] })),
   };
 }
 
@@ -140,6 +142,30 @@ function syncMirror(keyIds: Set<string>) {
   });
 
   _mirrorUpdating = false;
+}
+
+// --- Alignment group support ---
+
+/** Enforce alignment group constraints: force locked coordinate back to group value */
+function enforceAlignmentGroups(keys: Key[], groups: AlignmentGroup[]) {
+  for (const group of groups) {
+    for (const keyId of group.keyIds) {
+      const key = keys.find((k) => k.id === keyId);
+      if (!key) continue;
+      if (group.axis === 'x') {
+        key.x = group.value;
+      } else {
+        key.y = group.value;
+      }
+    }
+  }
+}
+
+/** Remove key IDs from alignment groups, pruning groups with < 2 members */
+function pruneAlignmentGroups(groups: AlignmentGroup[], removedIds: Set<string>): AlignmentGroup[] {
+  return groups
+    .map((g) => ({ ...g, keyIds: g.keyIds.filter((id) => !removedIds.has(id)) }))
+    .filter((g) => g.keyIds.length >= 2);
 }
 
 // --- Undo/redo history ---
@@ -217,21 +243,23 @@ export function endContinuous() {
 
 /** Move a key to a new absolute position (in U). No undo push; for use during drag. */
 export function moveKey(keyId: string, x: number, y: number) {
-  layout.update((l) => ({
-    ...l,
-    keys: l.keys.map((k) => (k.id === keyId ? { ...k, x, y } : k)),
-  }));
+  layout.update((l) => {
+    const keys = l.keys.map((k) => (k.id === keyId ? { ...k, x, y } : k));
+    enforceAlignmentGroups(keys, l.alignmentGroups);
+    return { ...l, keys };
+  });
   syncMirror(new Set([keyId]));
 }
 
 /** Move multiple keys by a delta (in U). No undo push; for use during drag. */
 export function moveKeys(keyIds: Set<string>, dx: number, dy: number) {
-  layout.update((l) => ({
-    ...l,
-    keys: l.keys.map((k) =>
+  layout.update((l) => {
+    const keys = l.keys.map((k) =>
       keyIds.has(k.id) ? { ...k, x: k.x + dx, y: k.y + dy } : k
-    ),
-  }));
+    );
+    enforceAlignmentGroups(keys, l.alignmentGroups);
+    return { ...l, keys };
+  });
   syncMirror(keyIds);
 }
 
@@ -261,7 +289,7 @@ export function addKey(x: number, y: number): string {
   return id;
 }
 
-/** Delete all keys matching the given IDs, cleaning up mirror pairs */
+/** Delete all keys matching the given IDs, cleaning up mirror pairs and alignment groups */
 export function deleteKeys(keyIds: Set<string>) {
   pushUndo();
   layout.update((l) => {
@@ -275,6 +303,7 @@ export function deleteKeys(keyIds: Set<string>) {
       ...l,
       keys: l.keys.filter((k) => !keyIds.has(k.id)),
       mirrorPairs: pairs,
+      alignmentGroups: pruneAlignmentGroups(l.alignmentGroups, keyIds),
     };
   });
 }
@@ -319,6 +348,60 @@ export function unlinkMirrorPair(keyId: string) {
     delete pairs[keyId];
     return { ...l, mirrorPairs: pairs };
   });
+}
+
+/** Create an alignment group: align selected keys on the given axis and lock them. */
+export function createAlignmentGroup(keyIds: Set<string>, axis: 'x' | 'y') {
+  if (keyIds.size < 2) return;
+  pushUndo();
+  layout.update((l) => {
+    const ids = [...keyIds];
+    const memberKeys = l.keys.filter((k) => ids.includes(k.id));
+    if (memberKeys.length < 2) return l;
+
+    // Compute average position on the locked axis
+    const avg = roundPos(memberKeys.reduce((sum, k) => sum + k[axis], 0) / memberKeys.length);
+
+    // Remove these keys from any existing alignment groups on the same axis
+    let groups = l.alignmentGroups.map((g) => {
+      if (g.axis !== axis) return g;
+      return { ...g, keyIds: g.keyIds.filter((id) => !keyIds.has(id)) };
+    }).filter((g) => g.keyIds.length >= 2);
+
+    // Create the new group
+    const group: AlignmentGroup = {
+      id: uuid(),
+      axis,
+      value: avg,
+      keyIds: ids,
+    };
+    groups = [...groups, group];
+
+    // Snap all members to the locked coordinate
+    const keys = l.keys.map((k) =>
+      keyIds.has(k.id) ? { ...k, [axis]: avg } : k
+    );
+
+    return { ...l, keys, alignmentGroups: groups };
+  });
+}
+
+/** Remove an alignment group by ID */
+export function removeAlignmentGroup(groupId: string) {
+  pushUndo();
+  layout.update((l) => ({
+    ...l,
+    alignmentGroups: l.alignmentGroups.filter((g) => g.id !== groupId),
+  }));
+}
+
+/** Remove specific keys from all alignment groups */
+export function removeKeysFromAlignment(keyIds: Set<string>) {
+  pushUndo();
+  layout.update((l) => ({
+    ...l,
+    alignmentGroups: pruneAlignmentGroups(l.alignmentGroups, keyIds),
+  }));
 }
 
 /**
@@ -400,10 +483,24 @@ export function enforceMinGap() {
     }
   }
 
+  // Enforce alignment groups: compute average drift on locked axis and re-align
+  for (const group of l.alignmentGroups) {
+    const memberKeys = keys.filter((k) => group.keyIds.includes(k.id));
+    if (memberKeys.length === 0) continue;
+    const axis = group.axis;
+    const avgValue = memberKeys.reduce((sum, k) => sum + k[axis], 0) / memberKeys.length;
+    const newGroupValue = roundPos(avgValue);
+    group.value = newGroupValue;
+    for (const mk of memberKeys) {
+      mk[axis] = newGroupValue;
+    }
+    changed = true;
+  }
+
   if (!changed) return;
 
   pushUndo();
-  layout.set({ ...l, keys });
+  layout.set({ ...l, keys, alignmentGroups: l.alignmentGroups.map((g) => ({ ...g, keyIds: [...g.keyIds] })) });
 
   // Re-sync mirror partners
   const pairs = l.mirrorPairs;

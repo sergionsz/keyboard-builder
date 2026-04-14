@@ -122,7 +122,7 @@ export function importKle(json: KleJson): Layout {
     cx = rx;
   }
 
-  return { name, keys, mirrorPairs: {}, mirrorAxisX: 0, minGap: 0, matrixOverrides: {} };
+  return { name, keys, mirrorPairs: {}, mirrorAxisX: 0, minGap: 0, matrixOverrides: {}, alignmentGroups: [] };
 }
 
 // ---- Export ----

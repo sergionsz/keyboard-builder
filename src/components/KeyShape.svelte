@@ -5,10 +5,11 @@
 
   const GAP = 2;    // px gap between key border and edge of cell
 
-  let { key, selected = false, linked = false, schematic = false, matrixCell, focusCols = false, groupColor, hasError = false, onDragStart }: {
+  let { key, selected = false, linked = false, aligned = false, schematic = false, matrixCell, focusCols = false, groupColor, hasError = false, onDragStart }: {
     key: Key;
     selected?: boolean;
     linked?: boolean;
+    aligned?: boolean;
     schematic?: boolean;
     matrixCell?: MatrixAssignment;
     focusCols?: boolean;
@@ -146,6 +147,16 @@
       stroke="#ff4444"
       stroke-width="2"
       stroke-dasharray="4 2"
+      pointer-events="none"
+    />
+  {/if}
+  {#if aligned}
+    <circle
+      cx={cx + GAP + 5}
+      cy={cy + h - GAP - 5}
+      r="3"
+      fill="#4aff88"
+      opacity="0.85"
       pointer-events="none"
     />
   {/if}

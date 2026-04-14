@@ -8,6 +8,13 @@ export interface Key {
   label: string;
 }
 
+export interface AlignmentGroup {
+  id: string;
+  axis: 'x' | 'y';    // which coordinate is locked
+  value: number;        // the locked coordinate in U (key position, not center)
+  keyIds: string[];     // member key IDs
+}
+
 export interface Layout {
   name: string;
   keys: Key[];
@@ -19,4 +26,6 @@ export interface Layout {
   minGap: number;
   /** Manual matrix overrides: key ID → {row, col}. Auto-assigned keys have no entry. */
   matrixOverrides: Record<string, { row: number; col: number }>;
+  /** Alignment groups that lock keys to shared coordinates */
+  alignmentGroups: AlignmentGroup[];
 }

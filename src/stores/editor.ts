@@ -7,6 +7,9 @@ export const zoom = writable(1);
 /** Whether space key is currently held (for space+drag panning) */
 export const spaceHeld = writable(false);
 
+/** Whether Alt key is currently held (disables snap guide snapping) */
+export const altHeld = writable(false);
+
 /** Snap-to-grid increment in U (0 = disabled) */
 export const gridSnap = writable(0.1);
 
