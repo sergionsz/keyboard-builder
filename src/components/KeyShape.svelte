@@ -4,10 +4,11 @@
 
   const GAP = 2;    // px gap between key border and edge of cell
 
-  let { key, selected = false, linked = false, onDragStart }: {
+  let { key, selected = false, linked = false, aligned = false, onDragStart }: {
     key: Key;
     selected?: boolean;
     linked?: boolean;
+    aligned?: boolean;
     onDragStart?: (keyId: string, e: PointerEvent) => void;
   } = $props();
 
@@ -95,6 +96,16 @@
       cy={cy + GAP + 5}
       r="3"
       fill="#ff9f4a"
+      opacity="0.85"
+      pointer-events="none"
+    />
+  {/if}
+  {#if aligned}
+    <circle
+      cx={cx + GAP + 5}
+      cy={cy + h - GAP - 5}
+      r="3"
+      fill="#4aff88"
       opacity="0.85"
       pointer-events="none"
     />
