@@ -89,8 +89,9 @@ export function serializeLayout(layout: Layout): string {
     }
   }
 
-  // Estimate buffer size (generous: 20 bytes per key + overhead)
-  const buf = new ArrayBuffer(4 + 256 + layout.keys.length * 30 + mirrorPairs.length * 4 + 10);
+  // Estimate buffer size (generous: 20 bytes per key + overhead + alignment groups)
+  const alignGroupBytes = (layout.alignmentGroups ?? []).reduce((sum, g) => sum + 5 + g.keyIds.length * 2, 2);
+  const buf = new ArrayBuffer(4 + 256 + layout.keys.length * 30 + mirrorPairs.length * 4 + 10 + alignGroupBytes);
   const view = new DataView(buf);
   let off = 0;
 
@@ -141,6 +142,21 @@ export function serializeLayout(layout: Layout): string {
   // Min gap in mm * 100 (uint16), only if non-zero
   if (layout.minGap > 0) {
     view.setUint16(off, Math.round(layout.minGap * 100), true); off += 2;
+  }
+
+  // Alignment groups (only if present)
+  const groups = layout.alignmentGroups ?? [];
+  if (groups.length > 0) {
+    view.setUint16(off, groups.length, true); off += 2;
+    for (const group of groups) {
+      view.setUint8(off++, group.axis === 'x' ? 0 : 1);
+      view.setInt16(off, Math.round(group.value * 100), true); off += 2;
+      view.setUint16(off, group.keyIds.length, true); off += 2;
+      for (const keyId of group.keyIds) {
+        const idx = idToIndex.get(keyId);
+        view.setUint16(off, idx ?? 0, true); off += 2;
+      }
+    }
   }
 
   const raw = new Uint8Array(buf, 0, off);
@@ -228,7 +244,27 @@ function deserializeV2(b64: string): Layout | null {
     minGap = view.getUint16(off, true) / 100; off += 2;
   }
 
-  return { name, keys, mirrorPairs, mirrorAxisX, minGap };
+  // Alignment groups (trailing, optional)
+  const alignmentGroups: { id: string; axis: 'x' | 'y'; value: number; keyIds: string[] }[] = [];
+  if (off + 2 <= raw.byteLength) {
+    const groupCount = view.getUint16(off, true); off += 2;
+    for (let i = 0; i < groupCount; i++) {
+      const axisVal = view.getUint8(off++);
+      const axis: 'x' | 'y' = axisVal === 0 ? 'x' : 'y';
+      const value = view.getInt16(off, true) / 100; off += 2;
+      const memberCount = view.getUint16(off, true); off += 2;
+      const keyIds: string[] = [];
+      for (let j = 0; j < memberCount; j++) {
+        const idx = view.getUint16(off, true); off += 2;
+        if (idx < keys.length) keyIds.push(keys[idx].id);
+      }
+      if (keyIds.length >= 2) {
+        alignmentGroups.push({ id: uuid(), axis, value, keyIds });
+      }
+    }
+  }
+
+  return { name, keys, mirrorPairs, mirrorAxisX, minGap, alignmentGroups };
 }
 
 // ── v1 fallback (lz-string JSON) ────────────────────────────────────
@@ -293,5 +329,6 @@ function deserializeV1(hash: string): Layout | null {
     mirrorPairs,
     mirrorAxisX: data.ax ?? 0,
     minGap: 0,
+    alignmentGroups: [],
   };
 }

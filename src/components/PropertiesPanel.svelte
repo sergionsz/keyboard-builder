@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { layout, updateKeysWithUndo, linkMirrorPair, unlinkMirrorPair, enforceMinGap } from '../stores/layout';
+  import { layout, updateKeysWithUndo, linkMirrorPair, unlinkMirrorPair, enforceMinGap, createAlignmentGroup, removeAlignmentGroup, removeKeysFromAlignment } from '../stores/layout';
   import { selection, minGap } from '../stores/editor';
   import type { Key } from '../types';
 
@@ -39,6 +39,13 @@
       }
     }
   }
+
+  // Find alignment groups that contain any selected key
+  let relevantGroups = $derived(
+    $layout.alignmentGroups.filter((g) =>
+      g.keyIds.some((id) => $selection.has(id))
+    )
+  );
 
   function onLabelInput(position: 'top' | 'bottom', raw: string) {
     const ids = $selection;
@@ -179,6 +186,34 @@
         </div>
       {/if}
     {/if}
+  {/if}
+
+  {#if count >= 2}
+    <div class="align-section">
+      <div class="align-buttons">
+        <button class="align-btn" onclick={() => createAlignmentGroup($selection, 'y')} title="Align selected keys horizontally (lock Y). Shortcut: H">
+          Align H
+        </button>
+        <button class="align-btn" onclick={() => createAlignmentGroup($selection, 'x')} title="Align selected keys vertically (lock X). Shortcut: V">
+          Align V
+        </button>
+      </div>
+    </div>
+  {/if}
+
+  {#if relevantGroups.length > 0}
+    <div class="align-section">
+      {#each relevantGroups as group}
+        <div class="align-group-info">
+          <span class="align-label">
+            {group.axis === 'y' ? 'H' : 'V'}-aligned ({group.keyIds.length} keys)
+          </span>
+          <button class="align-remove-btn" onclick={() => removeAlignmentGroup(group.id)} title="Remove this alignment group">
+            Remove
+          </button>
+        </div>
+      {/each}
+    </div>
   {/if}
 
   <div class="settings-section">
@@ -332,6 +367,59 @@
   .apply-gap-btn:disabled {
     opacity: 0.4;
     cursor: default;
+  }
+
+  .align-section {
+    margin-bottom: 10px;
+    padding-top: 8px;
+    border-top: 1px solid #333;
+  }
+
+  .align-buttons {
+    display: flex;
+    gap: 6px;
+  }
+
+  .align-btn {
+    flex: 1;
+    background: #333;
+    color: #4aff88;
+    border: 1px solid #555;
+    border-radius: 4px;
+    padding: 6px 10px;
+    font-size: 12px;
+    cursor: pointer;
+    font-family: inherit;
+  }
+
+  .align-btn:hover {
+    background: #444;
+  }
+
+  .align-group-info {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 4px;
+    font-size: 12px;
+  }
+
+  .align-label {
+    color: #4aff88;
+  }
+
+  .align-remove-btn {
+    background: none;
+    border: none;
+    color: #888;
+    font-size: 11px;
+    cursor: pointer;
+    padding: 2px 6px;
+    font-family: inherit;
+  }
+
+  .align-remove-btn:hover {
+    color: #ccc;
   }
 
   .settings-section {
