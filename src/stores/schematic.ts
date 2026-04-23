@@ -2,7 +2,7 @@ import { writable, derived } from 'svelte/store';
 import { layout, pushUndoExported, updateLayoutField } from './layout';
 import { autoAssignMatrix, findDuplicates, type MatrixMap } from '../lib/matrix';
 
-export type EditorMode = 'layout' | 'schematic';
+export type EditorMode = 'layout' | 'schematic' | 'plate';
 export type SchematicFocus = 'rows' | 'cols';
 
 export const editorMode = writable<EditorMode>('layout');

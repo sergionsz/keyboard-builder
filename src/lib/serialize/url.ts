@@ -276,7 +276,7 @@ function deserializeV2(b64: string): Layout | null {
     minGap = view.getUint16(off, true) / 100; off += 2;
   }
 
-  return { name, keys, mirrorPairs, mirrorAxisX, minGap, matrixOverrides: {}, alignmentGroups: [] };
+  return { name, keys, mirrorPairs, mirrorAxisX, minGap, matrixOverrides: {}, alignmentGroups: [], plates: [], plateCornerRadius: 0 };
 }
 
 function deserializeV3(b64: string): Layout | null {
@@ -376,7 +376,7 @@ function deserializeV3(b64: string): Layout | null {
     }
   }
 
-  return { name, keys, mirrorPairs, mirrorAxisX, minGap, matrixOverrides, alignmentGroups };
+  return { name, keys, mirrorPairs, mirrorAxisX, minGap, matrixOverrides, alignmentGroups, plates: [], plateCornerRadius: 0 };
 }
 
 // ── v1 fallback (lz-string JSON) ────────────────────────────────────
@@ -443,5 +443,6 @@ function deserializeV1(hash: string): Layout | null {
     minGap: 0,
     matrixOverrides: {},
     alignmentGroups: [],
+    plates: [], plateCornerRadius: 0,
   };
 }

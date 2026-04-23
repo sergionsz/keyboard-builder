@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { layout, moveKey, moveKeys, updateKeys, addKey, deleteKeys, beginContinuous, endContinuous, undo, redo, setMirrorAxisX, linkMirrorPair, unlinkMirrorPair, createAlignmentGroup } from '../stores/layout';
+  import { layout, moveKey, moveKeys, updateKeys, addKey, deleteKeys, beginContinuous, endContinuous, undo, redo, setMirrorAxisX, linkMirrorPair, unlinkMirrorPair, createAlignmentGroup, setPlates, movePlateVertex, movePlateVertices, addPlateVertex, removePlateVertices } from '../stores/layout';
   import { pan, zoom, spaceHeld, altHeld, drag, gridSnap, minGap, selection, rotating } from '../stores/editor';
   import { SCALE, screenToCanvas, canvasPxToU } from '../lib/coords';
   import { snapToGrid, snapAngle, roundPos, roundRot, computeAlignmentGuides, applyGuideSnap, type AlignmentGuide } from '../lib/snap';
@@ -9,6 +9,7 @@
   import SelectionHandles from './SelectionHandles.svelte';
   import { editorMode, schematicFocus, matrix, matrixErrors, primaryColor, secondaryColor } from '../stores/schematic';
   import type { MatrixAssignment } from '../lib/matrix';
+  import { generatePlateOutlines, filletPolygon, type PlatePolygon } from '../lib/plate';
 
   // Build row and column wire paths for schematic mode
   let rowWires = $derived.by(() => {
@@ -63,6 +64,33 @@
   });
 
   const MM_PER_U = 19.05;
+
+  // Auto-generate plate outlines when entering plate mode with none defined
+  $effect(() => {
+    if ($editorMode === 'plate' && $layout.plates.length === 0 && $layout.keys.length > 0) {
+      const result = generatePlateOutlines($layout.keys);
+      setPlates(result.plates.map((verts) => ({ vertices: verts })));
+    }
+  });
+
+  // --- Plate vertex state ---
+  let draggingVertex = $state<{ plateIdx: number; vertexIdx: number } | null>(null);
+  /** Set of selected vertices, encoded as "plateIdx:vertexIdx" strings */
+  let selectedVertices = $state<Set<string>>(new Set());
+
+  function vertexKey(plateIdx: number, vertexIdx: number): string {
+    return `${plateIdx}:${vertexIdx}`;
+  }
+
+  function isVertexSelected(plateIdx: number, vertexIdx: number): boolean {
+    return selectedVertices.has(vertexKey(plateIdx, vertexIdx));
+  }
+
+  // Clear vertex selection when leaving plate mode; clear key selection when entering it
+  $effect(() => {
+    if ($editorMode === 'plate') selection.set(new Set());
+    if ($editorMode !== 'plate') selectedVertices = new Set();
+  });
 
   let svgEl: SVGSVGElement;
 
@@ -153,6 +181,9 @@
   function onKeyDragStart(keyId: string, e: PointerEvent) {
     if ($spaceHeld) return;
 
+    // In plate mode, keys are not interactive
+    if ($editorMode === 'plate') return;
+
     const screenPt = eventToSvgScreen(e);
     const canvasPt = screenToCanvas(screenPt, $pan, $zoom);
     const mousePosU = canvasPxToU(canvasPt);
@@ -213,6 +244,36 @@
     svgEl.setPointerCapture(e.pointerId);
   }
 
+  // --- Plate vertex drag start ---
+  let vertexDidDrag = $state(false);
+
+  function onVertexDragStart(plateIdx: number, vertexIdx: number, e: PointerEvent) {
+    if (e.button !== 0) return;
+    e.stopPropagation();
+    vertexDidDrag = false;
+    draggingVertex = { plateIdx, vertexIdx };
+
+    const vk = vertexKey(plateIdx, vertexIdx);
+    if (!selectedVertices.has(vk)) {
+      // Clicking an unselected vertex: select only this one
+      selectedVertices = new Set([vk]);
+    }
+    // else: already selected, keep multi-selection for group drag
+
+    beginContinuous();
+    svgEl.setPointerCapture(e.pointerId);
+  }
+
+  // --- Plate edge click: add a vertex ---
+  function onEdgeClick(plateIdx: number, edgeIdx: number, e: PointerEvent) {
+    if (e.button !== 0) return;
+    e.stopPropagation();
+    const screenPt = eventToSvgScreen(e);
+    const canvasPt = screenToCanvas(screenPt, $pan, $zoom);
+    const posU = canvasPxToU(canvasPt);
+    addPlateVertex(plateIdx, edgeIdx, roundPos(posU.x), roundPos(posU.y));
+  }
+
   // --- Rotation handle start ---
   function onRotateStart(keyId: string, e: PointerEvent) {
     const key = $layout.keys.find((k) => k.id === keyId);
@@ -249,8 +310,11 @@
       return;
     }
 
-    // Left click on empty canvas → start marquee selection
+    // Left click on empty canvas
     if (e.button === 0 && !$spaceHeld) {
+      // Deselect vertices in plate mode
+      if ($editorMode === 'plate') selectedVertices = new Set();
+
       const screenPt = eventToSvgScreen(e);
       const canvasPt = screenToCanvas(screenPt, $pan, $zoom);
       const posU = canvasPxToU(canvasPt);
@@ -262,6 +326,31 @@
   }
 
   function onPointerMove(e: PointerEvent) {
+    // Plate vertex drag
+    if (draggingVertex) {
+      vertexDidDrag = true;
+      const screenPt = eventToSvgScreen(e);
+      const canvasPt = screenToCanvas(screenPt, $pan, $zoom);
+      const posU = canvasPxToU(canvasPt);
+      const snap = $gridSnap;
+      const x = snap > 0 && e.shiftKey ? snapToGrid(posU.x, snap) : roundPos(posU.x);
+      const y = snap > 0 && e.shiftKey ? snapToGrid(posU.y, snap) : roundPos(posU.y);
+
+      // Get current position of the anchor vertex to compute delta
+      const anchor = $layout.plates[draggingVertex.plateIdx]?.vertices[draggingVertex.vertexIdx];
+      if (!anchor) return;
+      const dx = x - anchor.x;
+      const dy = y - anchor.y;
+      if (dx === 0 && dy === 0) return;
+
+      if (selectedVertices.size > 1) {
+        movePlateVertices(selectedVertices, dx, dy);
+      } else {
+        movePlateVertex(draggingVertex.plateIdx, draggingVertex.vertexIdx, x, y);
+      }
+      return;
+    }
+
     if (isMarquee) {
       const screenPt = eventToSvgScreen(e);
       const canvasPt = screenToCanvas(screenPt, $pan, $zoom);
@@ -405,6 +494,13 @@
   }
 
   function onPointerUp(e: PointerEvent) {
+    if (draggingVertex) {
+      if (vertexDidDrag) endContinuous();
+      draggingVertex = null;
+      svgEl.releasePointerCapture(e.pointerId);
+      return;
+    }
+
     if (isMarquee) {
       isMarquee = false;
       svgEl.releasePointerCapture(e.pointerId);
@@ -416,7 +512,28 @@
 
       // Tiny marquee = just a click → deselect
       if (w < 0.05 && h < 0.05) {
-        if (!e.shiftKey) selection.set(new Set());
+        if ($editorMode === 'plate') {
+          selectedVertices = new Set();
+        } else if (!e.shiftKey) {
+          selection.set(new Set());
+        }
+        return;
+      }
+
+      // In plate mode, marquee selects vertices
+      if ($editorMode === 'plate') {
+        const right = left + w;
+        const bottom = top + h;
+        const sel = new Set<string>();
+        for (let pi = 0; pi < $layout.plates.length; pi++) {
+          for (let vi = 0; vi < $layout.plates[pi].vertices.length; vi++) {
+            const v = $layout.plates[pi].vertices[vi];
+            if (v.x >= left && v.x <= right && v.y >= top && v.y <= bottom) {
+              sel.add(vertexKey(pi, vi));
+            }
+          }
+        }
+        selectedVertices = sel;
         return;
       }
 
@@ -504,6 +621,16 @@
       return;
     }
 
+    // Delete / Backspace → delete selected vertices (plate mode)
+    if ((e.code === 'Delete' || e.code === 'Backspace') && $editorMode === 'plate') {
+      if (selectedVertices.size > 0) {
+        e.preventDefault();
+        removePlateVertices(selectedVertices);
+        selectedVertices = new Set();
+      }
+      return;
+    }
+
     // Delete / Backspace → delete selected keys (layout mode only)
     if ((e.code === 'Delete' || e.code === 'Backspace') && $editorMode === 'layout') {
       const sel = $selection;
@@ -531,8 +658,8 @@
       return;
     }
 
-    // M → link/unlink mirror pair (exactly 2 keys selected)
-    if (e.code === 'KeyM' && !e.ctrlKey && !e.metaKey) {
+    // M → link/unlink mirror pair (exactly 2 keys selected, layout mode only)
+    if (e.code === 'KeyM' && !e.ctrlKey && !e.metaKey && $editorMode === 'layout') {
       const sel = $selection;
       if (sel.size === 2) {
         e.preventDefault();
@@ -547,8 +674,8 @@
       return;
     }
 
-    // H → create horizontal alignment group (lock Y) from selected keys
-    if (e.code === 'KeyH' && !e.ctrlKey && !e.metaKey) {
+    // H → create horizontal alignment group (lock Y, layout mode only)
+    if (e.code === 'KeyH' && !e.ctrlKey && !e.metaKey && $editorMode === 'layout') {
       const sel = $selection;
       if (sel.size >= 2) {
         e.preventDefault();
@@ -557,8 +684,8 @@
       return;
     }
 
-    // V → create vertical alignment group (lock X) from selected keys
-    if (e.code === 'KeyV' && !e.ctrlKey && !e.metaKey) {
+    // V → create vertical alignment group (lock X, layout mode only)
+    if (e.code === 'KeyV' && !e.ctrlKey && !e.metaKey && $editorMode === 'layout') {
       const sel = $selection;
       if (sel.size >= 2) {
         e.preventDefault();
@@ -567,8 +694,8 @@
       return;
     }
 
-    // Arrow keys → move selected keys
-    if (e.code === 'ArrowLeft' || e.code === 'ArrowRight' || e.code === 'ArrowUp' || e.code === 'ArrowDown') {
+    // Arrow keys → move selected keys (layout mode only)
+    if ((e.code === 'ArrowLeft' || e.code === 'ArrowRight' || e.code === 'ArrowUp' || e.code === 'ArrowDown') && $editorMode === 'layout') {
       const sel = $selection;
       if (sel.size > 0) {
         e.preventDefault();
@@ -748,6 +875,59 @@
       {/if}
     {/each}
 
+    <!-- Plate outlines (plate mode) -->
+    {#if $editorMode === 'plate'}
+      {#each $layout.plates as plate, pi}
+        {@const verts = plate.vertices}
+        {@const radius = $layout.plateCornerRadius}
+        {@const filleted = radius > 0 ? filletPolygon(verts, radius) : null}
+        <!-- Filleted outline preview (when radius > 0) -->
+        {#if filleted}
+          <polygon
+            points={filleted.map(v => `${v.x * SCALE},${v.y * SCALE}`).join(' ')}
+            fill="rgba(74, 158, 255, 0.08)"
+            stroke="#4a9eff"
+            stroke-width={1.5 / $zoom}
+            pointer-events="none"
+          />
+        {/if}
+        <!-- Sharp outline (dimmed when fillet active, full when not) -->
+        <polygon
+          points={verts.map(v => `${v.x * SCALE},${v.y * SCALE}`).join(' ')}
+          fill={filleted ? 'none' : 'rgba(74, 158, 255, 0.08)'}
+          stroke="#4a9eff"
+          stroke-width={1 / $zoom}
+          stroke-dasharray={filleted ? `${4 / $zoom} ${3 / $zoom}` : 'none'}
+          opacity={filleted ? 0.3 : 1}
+          pointer-events="none"
+        />
+        <!-- Edge hit targets (click to add vertex) -->
+        {#each verts as v, vi}
+          {@const next = verts[(vi + 1) % verts.length]}
+          <!-- svelte-ignore a11y_no_static_element_interactions -->
+          <line
+            x1={v.x * SCALE} y1={v.y * SCALE}
+            x2={next.x * SCALE} y2={next.y * SCALE}
+            stroke="transparent"
+            stroke-width={8 / $zoom}
+            class="plate-edge"
+            onpointerdown={(e) => onEdgeClick(pi, vi, e)}
+          />
+        {/each}
+        <!-- Vertex handles -->
+        {#each verts as v, vi}
+          <!-- svelte-ignore a11y_no_static_element_interactions -->
+          <circle
+            cx={v.x * SCALE} cy={v.y * SCALE}
+            r={5 / $zoom}
+            class="plate-vertex"
+            class:plate-vertex-selected={isVertexSelected(pi, vi)}
+            onpointerdown={(e) => onVertexDragStart(pi, vi, e)}
+          />
+        {/each}
+      {/each}
+    {/if}
+
     {#each $layout.keys as key (key.id)}
       {@const cell = $matrix[key.id]}
       {@const focusIdx = cell ? ($schematicFocus === 'rows' ? cell.row : cell.col) : undefined}
@@ -757,6 +937,7 @@
         linked={!!$layout.mirrorPairs[key.id]}
         aligned={alignedKeyIds.has(key.id)}
         schematic={$editorMode === 'schematic'}
+        interactive={$editorMode !== 'plate'}
         matrixCell={cell}
         focusCols={$schematicFocus === 'cols'}
         groupColor={focusIdx !== undefined ? primaryColor(focusIdx) : undefined}
@@ -764,10 +945,12 @@
         onDragStart={onKeyDragStart}
       />
     {/each}
-    <!-- Rotation handle for selected keys -->
-    {#each $layout.keys.filter((k) => $selection.has(k.id)) as key (key.id)}
-      <SelectionHandles {key} {onRotateStart} />
-    {/each}
+    <!-- Rotation handle for selected keys (layout mode only) -->
+    {#if $editorMode === 'layout'}
+      {#each $layout.keys.filter((k) => $selection.has(k.id)) as key (key.id)}
+        <SelectionHandles {key} {onRotateStart} />
+      {/each}
+    {/if}
 
     <!-- Snap alignment guides -->
     {#each activeGuides as guide}
@@ -837,5 +1020,25 @@
 
   .axis-handle {
     cursor: ew-resize;
+  }
+
+  .plate-vertex {
+    fill: white;
+    stroke: #4a9eff;
+    stroke-width: 2;
+    cursor: grab;
+  }
+
+  .plate-vertex:hover {
+    fill: #e0eeff;
+  }
+
+  .plate-vertex-selected {
+    fill: #4a9eff;
+    stroke: white;
+  }
+
+  .plate-edge {
+    cursor: copy;
   }
 </style>

@@ -5,12 +5,13 @@
 
   const GAP = 2;    // px gap between key border and edge of cell
 
-  let { key, selected = false, linked = false, aligned = false, schematic = false, matrixCell, focusCols = false, groupColor, hasError = false, onDragStart }: {
+  let { key, selected = false, linked = false, aligned = false, schematic = false, interactive = true, matrixCell, focusCols = false, groupColor, hasError = false, onDragStart }: {
     key: Key;
     selected?: boolean;
     linked?: boolean;
     aligned?: boolean;
     schematic?: boolean;
+    interactive?: boolean;
     matrixCell?: MatrixAssignment;
     focusCols?: boolean;
     groupColor?: string;
@@ -39,6 +40,7 @@
 <g
   transform="rotate({key.rotation}, {centerX}, {centerY})"
   class="key-group"
+  class:key-group-inert={!interactive}
   onpointerdown={handlePointerDown}
 >
   {#if selected}
@@ -165,6 +167,11 @@
 <style>
   .key-group {
     cursor: move;
+  }
+
+  .key-group-inert {
+    cursor: default;
+    pointer-events: none;
   }
 
   .key-selection {

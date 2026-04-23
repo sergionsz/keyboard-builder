@@ -1,5 +1,5 @@
 import { writable, get } from 'svelte/store';
-import type { Key, Layout, AlignmentGroup } from '../types';
+import type { Key, Layout, AlignmentGroup, PlateOutline } from '../types';
 import { uuid } from '../lib/uuid';
 import { serializeLayout, deserializeLayout } from '../lib/serialize/url';
 import { roundPos } from '../lib/snap';
@@ -83,6 +83,8 @@ function createSampleLayout(): Layout {
     minGap: 0,
     matrixOverrides: {},
     alignmentGroups: [],
+    plates: [],
+    plateCornerRadius: 0,
   };
 }
 
@@ -93,6 +95,7 @@ function deepClone(layout: Layout): Layout {
     mirrorPairs: { ...layout.mirrorPairs },
     matrixOverrides: { ...layout.matrixOverrides },
     alignmentGroups: layout.alignmentGroups.map((g) => ({ ...g, keyIds: [...g.keyIds] })),
+    plates: layout.plates.map((p) => ({ vertices: p.vertices.map((v) => ({ ...v })) })),
   };
 }
 
@@ -518,6 +521,86 @@ export function enforceMinGap() {
     toSync.add(centerA <= centerB ? idA : idB);
   }
   if (toSync.size > 0) syncMirror(toSync);
+}
+
+// --- Plate outline mutations ---
+
+/** Replace all plate outlines (pushes undo). */
+export function setPlates(plates: PlateOutline[]) {
+  pushUndo();
+  layout.update((l) => ({ ...l, plates }));
+}
+
+/** Move a vertex within a plate. No undo push; for use during drag. */
+export function movePlateVertex(plateIdx: number, vertexIdx: number, x: number, y: number) {
+  layout.update((l) => {
+    const plates = l.plates.map((p, pi) => {
+      if (pi !== plateIdx) return p;
+      const vertices = p.vertices.map((v, vi) =>
+        vi === vertexIdx ? { x, y } : v,
+      );
+      return { vertices };
+    });
+    return { ...l, plates };
+  });
+}
+
+/** Move multiple vertices by a delta. No undo push; for use during drag.
+ *  `keys` is a set of "plateIdx:vertexIdx" strings. */
+export function movePlateVertices(keys: Set<string>, dx: number, dy: number) {
+  layout.update((l) => {
+    const plates = l.plates.map((p, pi) => {
+      const vertices = p.vertices.map((v, vi) => {
+        if (keys.has(`${pi}:${vi}`)) {
+          return { x: v.x + dx, y: v.y + dy };
+        }
+        return v;
+      });
+      return { vertices };
+    });
+    return { ...l, plates };
+  });
+}
+
+/** Add a vertex to a plate at the given index (pushes undo). */
+export function addPlateVertex(plateIdx: number, afterIdx: number, x: number, y: number) {
+  pushUndo();
+  layout.update((l) => {
+    const plates = l.plates.map((p, pi) => {
+      if (pi !== plateIdx) return p;
+      const vertices = [...p.vertices];
+      vertices.splice(afterIdx + 1, 0, { x, y });
+      return { vertices };
+    });
+    return { ...l, plates };
+  });
+}
+
+/** Remove multiple vertices (single undo push). Minimum 3 vertices per plate.
+ *  `keys` is a set of "plateIdx:vertexIdx" strings. */
+export function removePlateVertices(keys: Set<string>) {
+  if (keys.size === 0) return;
+  // Check that no plate would drop below 3 vertices
+  const removalsPerPlate = new Map<number, Set<number>>();
+  for (const key of keys) {
+    const [pi, vi] = key.split(':').map(Number);
+    if (!removalsPerPlate.has(pi)) removalsPerPlate.set(pi, new Set());
+    removalsPerPlate.get(pi)!.add(vi);
+  }
+  const l = get(layout);
+  for (const [pi, vis] of removalsPerPlate) {
+    const plate = l.plates[pi];
+    if (!plate || plate.vertices.length - vis.size < 3) return;
+  }
+  pushUndo();
+  layout.update((l) => {
+    const plates = l.plates.map((p, pi) => {
+      const toRemove = removalsPerPlate.get(pi);
+      if (!toRemove) return p;
+      return { vertices: p.vertices.filter((_, vi) => !toRemove.has(vi)) };
+    });
+    return { ...l, plates };
+  });
 }
 
 /** Move the mirror axis to a new X position (in U). No undo push; for use during drag. */
