@@ -37,4 +37,6 @@ export interface Layout {
   plates: PlateOutline[];
   /** Corner fillet radius in mm (0 = sharp corners) */
   plateCornerRadius: number;
+  /** Manual Pro Micro pin overrides: physical pin number -> net name (e.g. "ROW0", "COL1") or "" to unassign */
+  pinOverrides?: Record<number, string>;
 }
