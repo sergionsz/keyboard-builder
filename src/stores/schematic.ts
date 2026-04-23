@@ -3,7 +3,7 @@ import { layout, pushUndoExported, updateLayoutField } from './layout';
 import { autoAssignMatrix, findDuplicates, type MatrixMap } from '../lib/matrix';
 import { assignPinsToMatrix, applyPinOverrides } from '../lib/serialize/proMicro';
 
-export type EditorMode = 'layout' | 'schematic';
+export type EditorMode = 'layout' | 'schematic' | 'plate';
 export type SchematicFocus = 'rows' | 'cols';
 
 export const editorMode = writable<EditorMode>('layout');

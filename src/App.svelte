@@ -2,6 +2,7 @@
   import Canvas from './components/Canvas.svelte';
   import PropertiesPanel from './components/PropertiesPanel.svelte';
   import SchematicPanel from './components/SchematicPanel.svelte';
+  import PlatePanel from './components/PlatePanel.svelte';
   import { layout } from './stores/layout';
   import { editorMode, type EditorMode } from './stores/schematic';
   import { importKle, exportKle } from './lib/serialize/kle';
@@ -114,17 +115,24 @@
         class:mode-active={$editorMode === 'schematic'}
         onclick={() => setMode('schematic')}
       >Schematic</button>
+      <button
+        class="mode-btn"
+        class:mode-active={$editorMode === 'plate'}
+        onclick={() => setMode('plate')}
+      >Plate</button>
     </div>
     <div class="toolbar">
       {#if $editorMode === 'layout'}
         <button onclick={onImportKle}>Import KLE</button>
         <button onclick={onExportKle}>Export KLE</button>
         <button onclick={onExportErgogen}>Export Ergogen</button>
-      {:else}
+      {:else if $editorMode === 'schematic'}
         <button onclick={onExportKicad}>Export Schematic</button>
         <button onclick={onExportKicadPcb}>Export PCB</button>
       {/if}
-      <button onclick={onExportPng}>Export PNG</button>
+      {#if $editorMode !== 'plate'}
+        <button onclick={onExportPng}>Export PNG</button>
+      {/if}
       <button class="help-btn" onclick={() => showHelp = true}>?</button>
     </div>
   </header>
@@ -132,8 +140,10 @@
     <Canvas />
     {#if $editorMode === 'layout'}
       <PropertiesPanel />
-    {:else}
+    {:else if $editorMode === 'schematic'}
       <SchematicPanel />
+    {:else if $editorMode === 'plate'}
+      <PlatePanel />
     {/if}
   </div>
 </main>

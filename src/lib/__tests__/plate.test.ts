@@ -1,0 +1,156 @@
+import { describe, it, expect } from 'vitest';
+import { generatePlateOutlines, filletPolygon, type OutlineRing } from '../plate';
+import type { Key } from '../../types';
+
+function makeKey(overrides: Partial<Key> & { x: number; y: number }): Key {
+  return {
+    id: 'k' + Math.random().toString(36).slice(2, 6),
+    width: 1,
+    height: 1,
+    rotation: 0,
+    label: '',
+    ...overrides,
+  };
+}
+
+describe('generatePlateOutlines', () => {
+  it('returns empty for no keys', () => {
+    const result = generatePlateOutlines([]);
+    expect(result.plates).toEqual([]);
+  });
+
+  it('produces a single plate for one key', () => {
+    const keys = [makeKey({ x: 0, y: 0 })];
+    const result = generatePlateOutlines(keys, 6);
+    expect(result.plates).toHaveLength(1);
+    expect(result.plates[0].length).toBe(4); // a rectangle has 4 vertices
+  });
+
+  it('merges adjacent keys into one plate', () => {
+    // Two 1U keys side by side
+    const keys = [
+      makeKey({ x: 0, y: 0 }),
+      makeKey({ x: 1, y: 0 }),
+    ];
+    const result = generatePlateOutlines(keys, 6);
+    expect(result.plates).toHaveLength(1);
+  });
+
+  it('produces separate plates for distant keys', () => {
+    // Two keys far apart (10U gap, bigger than 2*padding)
+    const keys = [
+      makeKey({ x: 0, y: 0 }),
+      makeKey({ x: 15, y: 0 }),
+    ];
+    const result = generatePlateOutlines(keys, 2);
+    expect(result.plates).toHaveLength(2);
+  });
+
+  it('handles rotated keys', () => {
+    const keys = [makeKey({ x: 0, y: 0, rotation: 45 })];
+    const result = generatePlateOutlines(keys, 6);
+    expect(result.plates).toHaveLength(1);
+    // Rotated rectangle still simplifies to 4 vertices
+    expect(result.plates[0].length).toBe(4);
+  });
+
+  it('handles wide keys (2U)', () => {
+    const keys = [makeKey({ x: 0, y: 0, width: 2 })];
+    const result = generatePlateOutlines(keys, 6);
+    expect(result.plates).toHaveLength(1);
+
+    // Plate should be wider than tall
+    const xs = result.plates[0].map((p) => p.x);
+    const ys = result.plates[0].map((p) => p.y);
+    const width = Math.max(...xs) - Math.min(...xs);
+    const height = Math.max(...ys) - Math.min(...ys);
+    expect(width).toBeGreaterThan(height);
+  });
+
+  it('plate bounds are larger than key bounds by ~padding', () => {
+    const paddingMM = 6;
+    const keys = [makeKey({ x: 0, y: 0 })];
+    const result = generatePlateOutlines(keys, paddingMM);
+    const plate = result.plates[0];
+
+    const xs = plate.map((p) => p.x);
+    const ys = plate.map((p) => p.y);
+    const plateWidth = (Math.max(...xs) - Math.min(...xs)) * 19.05; // mm
+    const plateHeight = (Math.max(...ys) - Math.min(...ys)) * 19.05; // mm
+
+    // Key is 19.05mm, plate should be key + 2*padding = 19.05 + 12 = 31.05mm
+    expect(plateWidth).toBeCloseTo(19.05 + 2 * paddingMM, 1);
+    expect(plateHeight).toBeCloseTo(19.05 + 2 * paddingMM, 1);
+  });
+
+  it('merges a standard keyboard row', () => {
+    // 10 keys in a row (like a number row)
+    const keys = Array.from({ length: 10 }, (_, i) =>
+      makeKey({ x: i, y: 0 }),
+    );
+    const result = generatePlateOutlines(keys, 6);
+    expect(result.plates).toHaveLength(1);
+    // Should simplify to a rectangle (4 vertices)
+    expect(result.plates[0].length).toBe(4);
+  });
+});
+
+describe('filletPolygon', () => {
+  // A simple 1U x 1U square in U coordinates
+  const square: OutlineRing = [
+    { x: 0, y: 0 },
+    { x: 1, y: 0 },
+    { x: 1, y: 1 },
+    { x: 0, y: 1 },
+  ];
+
+  it('returns original polygon when radius is 0', () => {
+    const result = filletPolygon(square, 0);
+    expect(result).toEqual(square);
+  });
+
+  it('returns original polygon for fewer than 3 vertices', () => {
+    const line: OutlineRing = [{ x: 0, y: 0 }, { x: 1, y: 0 }];
+    const result = filletPolygon(line, 5);
+    expect(result).toEqual(line);
+  });
+
+  it('produces more vertices than the original', () => {
+    const result = filletPolygon(square, 2);
+    expect(result.length).toBeGreaterThan(square.length);
+  });
+
+  it('all fillet points lie within the original bounding box', () => {
+    const result = filletPolygon(square, 2);
+    for (const p of result) {
+      expect(p.x).toBeGreaterThanOrEqual(-0.001);
+      expect(p.x).toBeLessThanOrEqual(1.001);
+      expect(p.y).toBeGreaterThanOrEqual(-0.001);
+      expect(p.y).toBeLessThanOrEqual(1.001);
+    }
+  });
+
+  it('clamps radius when edges are short', () => {
+    // Tiny triangle: edges are ~1U long, radius of 100mm would overshoot
+    const triangle: OutlineRing = [
+      { x: 0, y: 0 },
+      { x: 1, y: 0 },
+      { x: 0.5, y: 0.866 },
+    ];
+    const result = filletPolygon(triangle, 100);
+    // Should still produce a valid polygon without NaN
+    expect(result.length).toBeGreaterThan(3);
+    for (const p of result) {
+      expect(Number.isFinite(p.x)).toBe(true);
+      expect(Number.isFinite(p.y)).toBe(true);
+    }
+  });
+
+  it('produces a symmetric result for a square', () => {
+    const result = filletPolygon(square, 2);
+    // Each corner should produce the same number of arc points
+    // Total points should be 4 * (arcPoints + 1) for a square
+    // With 90-degree corners and 8 points per 90 degrees: 4 * (8+1) = 36
+    expect(result.length % 4).toBe(0);
+  });
+});

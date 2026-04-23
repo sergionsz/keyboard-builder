@@ -15,6 +15,11 @@ export interface AlignmentGroup {
   keyIds: string[];     // member key IDs
 }
 
+/** A single plate outline: list of vertices in U coordinates. */
+export interface PlateOutline {
+  vertices: { x: number; y: number }[];
+}
+
 export interface Layout {
   name: string;
   keys: Key[];
@@ -28,6 +33,10 @@ export interface Layout {
   matrixOverrides: Record<string, { row: number; col: number }>;
   /** Alignment groups that lock keys to shared coordinates */
   alignmentGroups: AlignmentGroup[];
+  /** Plate outlines for STL export; each entry is a disjoint plate (e.g. split halves) */
+  plates: PlateOutline[];
+  /** Corner fillet radius in mm (0 = sharp corners) */
+  plateCornerRadius: number;
   /** Manual Pro Micro pin overrides: physical pin number -> net name (e.g. "ROW0", "COL1") or "" to unassign */
   pinOverrides?: Record<number, string>;
 }
