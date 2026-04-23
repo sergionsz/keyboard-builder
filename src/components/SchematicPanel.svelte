@@ -1,8 +1,9 @@
 <script lang="ts">
   import { layout } from '../stores/layout';
   import { selection } from '../stores/editor';
-  import { matrix, matrixErrors, resetMatrix, setKeyMatrix, primaryColor, secondaryColor, schematicFocus, type SchematicFocus } from '../stores/schematic';
+  import { matrix, matrixErrors, resetMatrix, setKeyMatrix, primaryColor, secondaryColor, schematicFocus, pinAssignments, pinErrors, setPinNet, resetPins, type SchematicFocus } from '../stores/schematic';
   import { matrixDimensions } from '../lib/matrix';
+  import { PRO_MICRO_PINS } from '../lib/serialize/proMicro';
   import type { Key } from '../types';
 
   let dims = $derived(matrixDimensions($matrix));
@@ -73,6 +74,36 @@
   function setFocus(f: SchematicFocus) {
     schematicFocus.set(f);
   }
+
+  // Available nets for pin assignment dropdowns
+  let availableNets = $derived.by(() => {
+    const nets: string[] = [''];
+    for (const r of sortedRows) nets.push(`ROW${r}`);
+    for (const c of sortedCols) nets.push(`COL${c}`);
+    return nets;
+  });
+
+  // GPIO pins only (for the pin mapping UI)
+  const gpioPins = PRO_MICRO_PINS.filter(p => p.gpio);
+
+  function onPinChange(pin: number, value: string) {
+    setPinNet(pin, value);
+  }
+
+  let hasOverrides = $derived(
+    Object.keys($layout.pinOverrides ?? {}).length > 0
+  );
+
+  // Set of pin numbers that have duplicate net assignments
+  let dupePinSet = $derived.by(() => {
+    const set = new Set<number>();
+    for (const pins of Object.values($pinErrors)) {
+      for (const p of pins) set.add(p);
+    }
+    return set;
+  });
+
+  let pinErrorCount = $derived(Object.keys($pinErrors).length);
 </script>
 
 <aside class="panel">
@@ -194,6 +225,45 @@
           </div>
         {/each}
       {/if}
+    </div>
+  </div>
+
+  <div class="pin-mapping-section">
+    <div class="pin-mapping-header">
+      <h3>Pin Mapping</h3>
+      {#if hasOverrides}
+        <button class="pin-reset-btn" onclick={resetPins}>Reset</button>
+      {/if}
+    </div>
+
+    {#if pinErrorCount > 0}
+      <div class="error-banner">
+        {pinErrorCount} net{pinErrorCount > 1 ? 's' : ''} assigned to multiple pins:
+        {Object.entries($pinErrors).map(([net, pins]) => `${net} (pins ${pins.join(', ')})`).join('; ')}
+      </div>
+    {/if}
+
+    <div class="pin-list">
+      {#each gpioPins as p}
+        {@const net = $pinAssignments[p.pin] ?? ''}
+        {@const netType = net.startsWith('ROW') ? 'row' : net.startsWith('COL') ? 'col' : null}
+        {@const netIndex = netType ? parseInt(net.slice(3)) : 0}
+        {@const isDupe = dupePinSet.has(p.pin)}
+        <div class="pin-row">
+          <span class="pin-label">{p.pin} {p.label}</span>
+          <select
+            class="pin-select"
+            class:pin-select-error={isDupe}
+            value={net}
+            style={!isDupe && netType ? `border-color: ${primaryColor(netIndex, 0.5)}; color: ${primaryColor(netIndex)}` : ''}
+            onchange={(e) => onPinChange(p.pin, e.currentTarget.value)}
+          >
+            {#each availableNets as n}
+              <option value={n}>{n || '(none)'}</option>
+            {/each}
+          </select>
+        </div>
+      {/each}
     </div>
   </div>
 </aside>
@@ -441,5 +511,77 @@
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
+  }
+
+  .pin-mapping-section {
+    margin-top: 12px;
+    border-top: 1px solid #333;
+    padding-top: 10px;
+  }
+
+  .pin-mapping-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 8px;
+  }
+
+  .pin-reset-btn {
+    background: #333;
+    color: #aaa;
+    border: 1px solid #444;
+    border-radius: 3px;
+    padding: 2px 8px;
+    font-size: 10px;
+    cursor: pointer;
+    font-family: inherit;
+  }
+
+  .pin-reset-btn:hover {
+    background: #444;
+    color: #fff;
+  }
+
+  .pin-list {
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+  }
+
+  .pin-row {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+
+  .pin-label {
+    font-size: 10px;
+    font-family: 'JetBrains Mono', 'SF Mono', 'Consolas', monospace;
+    color: #888;
+    min-width: 60px;
+    flex-shrink: 0;
+  }
+
+  .pin-select {
+    flex: 1;
+    background: #2a2a2a;
+    border: 1px solid #444;
+    border-radius: 3px;
+    color: #ccc;
+    padding: 2px 4px;
+    font-size: 10px;
+    font-family: 'JetBrains Mono', 'SF Mono', 'Consolas', monospace;
+    cursor: pointer;
+  }
+
+  .pin-select:focus {
+    outline: none;
+    border-color: #4a9eff;
+  }
+
+  .pin-select-error {
+    border-color: #ff4444 !important;
+    color: #ff6666 !important;
+    background: rgba(255, 68, 68, 0.08);
   }
 </style>

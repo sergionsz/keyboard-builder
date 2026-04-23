@@ -7,8 +7,15 @@
   import type { Key } from '../types';
   import KeyShape from './KeyShape.svelte';
   import SelectionHandles from './SelectionHandles.svelte';
-  import { editorMode, schematicFocus, matrix, matrixErrors, primaryColor, secondaryColor } from '../stores/schematic';
+  import { editorMode, schematicFocus, matrix, matrixErrors, primaryColor, secondaryColor, pinAssignments, pinErrors } from '../stores/schematic';
   import type { MatrixAssignment } from '../lib/matrix';
+  import { PRO_MICRO_PINS } from '../lib/serialize/proMicro';
+
+  // MCU visualization constants (in canvas units = U)
+  const MCU_W = 2;      // width in U
+  const MCU_H = 4;      // height in U
+  const MCU_GAP = 2;    // gap between rightmost key and MCU
+  const MCU_PIN_SPACING = MCU_H / 13; // spacing between pins on each side
 
   // Build row and column wire paths for schematic mode
   let rowWires = $derived.by(() => {
@@ -51,6 +58,121 @@
       wires.push({ col, points: pts.map((p) => `${p.cx},${p.cy}`).join(' ') });
     }
     return wires;
+  });
+
+  // MCU position and wiring for schematic mode
+  let mcuData = $derived.by(() => {
+    if ($editorMode !== 'schematic') return null;
+
+    const keys = $layout.keys;
+    const mat = $matrix;
+    if (keys.length === 0) return null;
+
+    // Find bounding box of keys (in U)
+    let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+    for (const key of keys) {
+      const cx = key.x + key.width / 2;
+      const cy = key.y + key.height / 2;
+      if (cx < minX) minX = cx;
+      if (cx > maxX) maxX = cx;
+      if (cy < minY) minY = cy;
+      if (cy > maxY) maxY = cy;
+    }
+
+    // Place MCU to the right of the keys
+    const mcuX = maxX + MCU_GAP + MCU_W / 2;
+    const mcuY = (minY + maxY) / 2;
+
+    // Get matrix dimensions
+    const rowSet = new Set<number>();
+    const colSet = new Set<number>();
+    for (const key of keys) {
+      const cell = mat[key.id];
+      if (cell) { rowSet.add(cell.row); colSet.add(cell.col); }
+    }
+    const rows = [...rowSet].sort((a, b) => a - b);
+    const cols = [...colSet].sort((a, b) => a - b);
+
+    // Use the store's pin assignments (auto + overrides)
+    const pinAssignment = $pinAssignments;
+    const errorPins = new Set<number>();
+    for (const pins of Object.values($pinErrors)) {
+      for (const p of pins) errorPins.add(p);
+    }
+
+    // Build pin display list: label, side, y-position, net name, color
+    const pinsPerSide = 12;
+    const pinList: { pin: number; label: string; gpio: boolean; side: 'left' | 'right'; y: number; net: string | null; netType: 'row' | 'col' | null; netIndex: number; hasError: boolean }[] = [];
+    for (const p of PRO_MICRO_PINS) {
+      const net = pinAssignment[p.pin] ?? null;
+      let netType: 'row' | 'col' | null = null;
+      let netIndex = 0;
+      if (net) {
+        if (net.startsWith('ROW')) { netType = 'row'; netIndex = parseInt(net.slice(3)); }
+        else if (net.startsWith('COL')) { netType = 'col'; netIndex = parseInt(net.slice(3)); }
+      }
+      const py = mcuY - MCU_H / 2 + (p.sideIndex + 0.5) * (MCU_H / pinsPerSide);
+      pinList.push({ pin: p.pin, label: p.label, gpio: p.gpio, side: p.side, y: py, net, netType, netIndex, hasError: errorPins.has(p.pin) });
+    }
+
+    // Build wires from row/col endpoints to MCU pins
+    // Row wires: find rightmost key center in each row, draw to MCU left pin
+    // Col wires: find bottommost key center in each col, draw down then across to MCU
+    const rowEndpoints: Record<number, { x: number; y: number }> = {};
+    const colEndpoints: Record<number, { x: number; y: number }> = {};
+    for (const key of keys) {
+      const cell = mat[key.id];
+      if (!cell) continue;
+      const cx = key.x + key.width / 2;
+      const cy = key.y + key.height / 2;
+      if (!rowEndpoints[cell.row] || cx > rowEndpoints[cell.row].x) {
+        rowEndpoints[cell.row] = { x: cx, y: cy };
+      }
+      if (!colEndpoints[cell.col] || cy > colEndpoints[cell.col].y) {
+        colEndpoints[cell.col] = { x: cx, y: cy };
+      }
+    }
+
+    // MCU wires: connect each assigned pin to its row/col endpoint
+    const mcuWires: { points: string; netType: 'row' | 'col'; netIndex: number }[] = [];
+    const mcuLeftX = mcuX - MCU_W / 2;
+    const mcuRightX = mcuX + MCU_W / 2;
+
+    for (const pin of pinList) {
+      if (!pin.net || !pin.netType) continue;
+      const pinTipX = pin.side === 'left' ? mcuLeftX : mcuRightX;
+      const pinTipY = pin.y;
+
+      if (pin.netType === 'row') {
+        const ep = rowEndpoints[pin.netIndex];
+        if (!ep) continue;
+        // Route: endpoint -> right to align with MCU X -> then vertical to pin Y -> pin
+        const midX = pinTipX - 0.3;
+        const pts = [
+          `${ep.x * SCALE},${ep.y * SCALE}`,
+          `${midX * SCALE},${ep.y * SCALE}`,
+          `${midX * SCALE},${pinTipY * SCALE}`,
+          `${pinTipX * SCALE},${pinTipY * SCALE}`,
+        ];
+        mcuWires.push({ points: pts.join(' '), netType: 'row', netIndex: pin.netIndex });
+      } else {
+        const ep = colEndpoints[pin.netIndex];
+        if (!ep) continue;
+        // Route: endpoint -> down to below keys -> right to below MCU pin -> up to pin
+        const belowY = maxY + 1.5;
+        const midX = pinTipX - 0.3;
+        const pts = [
+          `${ep.x * SCALE},${ep.y * SCALE}`,
+          `${ep.x * SCALE},${belowY * SCALE}`,
+          `${midX * SCALE},${belowY * SCALE}`,
+          `${midX * SCALE},${pinTipY * SCALE}`,
+          `${pinTipX * SCALE},${pinTipY * SCALE}`,
+        ];
+        mcuWires.push({ points: pts.join(' '), netType: 'col', netIndex: pin.netIndex });
+      }
+    }
+
+    return { mcuX, mcuY, pinList, mcuWires, mcuLeftX, mcuRightX };
   });
 
   // Keys with duplicate (row,col) assignments
@@ -718,6 +840,96 @@
           pointer-events="none"
         />
       {/each}
+
+      <!-- MCU wires connecting rows/cols to Pro Micro pins -->
+      {#if mcuData}
+        {@const S = MCU_H * SCALE / 12}
+        <!-- MCU-to-matrix wires (behind MCU) -->
+        {#each mcuData.mcuWires as wire}
+          <polyline
+            points={wire.points}
+            fill="none"
+            stroke={wire.netType === 'row'
+              ? primaryColor(wire.netIndex, focusRows ? 0.5 : 0.2)
+              : primaryColor(wire.netIndex, focusRows ? 0.2 : 0.5)}
+            stroke-width={(wire.netType === 'row' ? (focusRows ? 2 : 1.2) : (focusRows ? 1.2 : 2)) / $zoom}
+            stroke-dasharray={
+              (wire.netType === 'row' && !focusRows) || (wire.netType === 'col' && focusRows)
+                ? `${6 / $zoom} ${3 / $zoom}` : 'none'}
+            pointer-events="none"
+          />
+        {/each}
+
+        <!-- MCU body -->
+        <rect
+          x={mcuData.mcuLeftX * SCALE}
+          y={(mcuData.mcuY - MCU_H / 2) * SCALE}
+          width={MCU_W * SCALE}
+          height={MCU_H * SCALE}
+          rx={S * 0.2}
+          fill="#2a2a2a"
+          stroke="#666"
+          stroke-width={S * 0.07}
+          pointer-events="none"
+        />
+        <!-- MCU label -->
+        <text
+          x={mcuData.mcuX * SCALE}
+          y={(mcuData.mcuY - MCU_H / 2) * SCALE + S * 0.55}
+          text-anchor="middle"
+          dominant-baseline="middle"
+          fill="#888"
+          font-size={S * 0.5}
+          font-weight="600"
+          pointer-events="none"
+        >Pro Micro</text>
+
+        <!-- MCU pins -->
+        {#each mcuData.pinList as pin}
+          {@const px = (pin.side === 'left' ? mcuData.mcuLeftX : mcuData.mcuRightX) * SCALE}
+          {@const py = pin.y * SCALE}
+          {@const pinColor = pin.hasError
+            ? '#ff4444'
+            : pin.netType === 'row'
+              ? primaryColor(pin.netIndex, focusRows ? 0.9 : 0.4)
+              : pin.netType === 'col'
+                ? primaryColor(pin.netIndex, focusRows ? 0.4 : 0.9)
+                : '#555'}
+          <!-- Pin dot -->
+          <circle
+            cx={px}
+            cy={py}
+            r={S * 0.12}
+            fill={pinColor}
+            pointer-events="none"
+          />
+          <!-- Pin label (inside MCU body) -->
+          <text
+            x={px + (pin.side === 'left' ? 1 : -1) * S * 0.25}
+            y={py}
+            text-anchor={pin.side === 'left' ? 'start' : 'end'}
+            dominant-baseline="middle"
+            fill={pin.net ? pinColor : '#555'}
+            font-size={S * 0.35}
+            font-family="'JetBrains Mono', 'SF Mono', monospace"
+            pointer-events="none"
+          >{pin.label}</text>
+          <!-- Net label (outside MCU body) -->
+          {#if pin.net}
+            <text
+              x={px + (pin.side === 'left' ? -1 : 1) * S * 0.3}
+              y={py}
+              text-anchor={pin.side === 'left' ? 'end' : 'start'}
+              dominant-baseline="middle"
+              fill={pinColor}
+              font-size={S * 0.35}
+              font-weight="600"
+              font-family="'JetBrains Mono', 'SF Mono', monospace"
+              pointer-events="none"
+            >{pin.net}</text>
+          {/if}
+        {/each}
+      {/if}
     {/if}
 
     <!-- Alignment group lines (shown when a member key is selected) -->

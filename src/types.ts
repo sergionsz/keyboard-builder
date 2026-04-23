@@ -28,4 +28,6 @@ export interface Layout {
   matrixOverrides: Record<string, { row: number; col: number }>;
   /** Alignment groups that lock keys to shared coordinates */
   alignmentGroups: AlignmentGroup[];
+  /** Manual Pro Micro pin overrides: physical pin number -> net name (e.g. "ROW0", "COL1") or "" to unassign */
+  pinOverrides?: Record<number, string>;
 }

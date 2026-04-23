@@ -7,6 +7,7 @@
   import { importKle, exportKle } from './lib/serialize/kle';
   import { exportErgogen } from './lib/serialize/ergogen';
   import { exportKicadSch } from './lib/serialize/kicad';
+  import { exportKicadPcb } from './lib/serialize/kicadPcb';
   import { exportPng } from './lib/exportPng';
   import { matrix } from './stores/schematic';
 
@@ -69,6 +70,17 @@
     URL.revokeObjectURL(url);
   }
 
+  function onExportKicadPcb() {
+    const pcb = exportKicadPcb($layout, $matrix);
+    const blob = new Blob([pcb], { type: 'application/x-kicad-pcb' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `${$layout.name || 'layout'}.kicad_pcb`;
+    a.click();
+    URL.revokeObjectURL(url);
+  }
+
   async function onExportPng() {
     const svgEl = document.getElementById('keyboard-canvas') as SVGSVGElement | null;
     if (!svgEl) return;
@@ -109,7 +121,8 @@
         <button onclick={onExportKle}>Export KLE</button>
         <button onclick={onExportErgogen}>Export Ergogen</button>
       {:else}
-        <button onclick={onExportKicad}>Export KiCad</button>
+        <button onclick={onExportKicad}>Export Schematic</button>
+        <button onclick={onExportKicadPcb}>Export PCB</button>
       {/if}
       <button onclick={onExportPng}>Export PNG</button>
       <button class="help-btn" onclick={() => showHelp = true}>?</button>
