@@ -119,7 +119,8 @@ describe('exportKicadPcb', () => {
     const matrix = { R: { row: 0, col: 0 } };
     const pcb = exportKicadPcb(layout, matrix);
 
-    expect(pcb).toContain('(at 38.1 38.1 15)');
+    // Switch is placed at the key center: (2 + 0.5) * 19.05 = 47.625mm.
+    expect(pcb).toContain('(at 47.625 47.625 15)');
   });
 
   it('handles empty layout', () => {
@@ -255,5 +256,45 @@ describe('pin assignment consistency', () => {
 
     // Pin 7 should be unassigned: no COL0 label at pin 7's position
     expect(resolved[7]).toBeUndefined();
+  });
+
+  it('uses plate outline for Edge.Cuts and emits mounting holes when plates are defined', () => {
+    const keys: Key[] = [];
+    for (let r = 0; r < 5; r++) {
+      for (let c = 0; c < 14; c++) {
+        keys.push(makeKey({ label: `k${r}_${c}`, id: `k${r}_${c}`, x: c, y: r }));
+      }
+    }
+    const matrix: Record<string, { row: number; col: number }> = {};
+    for (const k of keys) {
+      const [_, r, c] = k.id.match(/k(\d+)_(\d+)/)!;
+      matrix[k.id] = { row: Number(r), col: Number(c) };
+    }
+    const layout = makeLayout(keys, matrix);
+    // 14U × 5U rectangular plate: corners are bbox corners + screws inside
+    const minX = -6 / 19.05, minY = -6 / 19.05;
+    const maxX = 14 + 6 / 19.05, maxY = 5 + 6 / 19.05;
+    layout.plates = [
+      {
+        vertices: [
+          { x: minX, y: minY },
+          { x: maxX, y: minY },
+          { x: maxX, y: maxY },
+          { x: minX, y: maxY },
+        ],
+      },
+    ];
+    layout.plateCornerRadius = 0;
+
+    const pcb = exportKicadPcb(layout, matrix);
+
+    // 4 outline edges → exactly 4 gr_line segments on Edge.Cuts
+    const edgeLines = pcb.split('\n').filter((l) => l.includes('(layer "Edge.Cuts")'));
+    expect(edgeLines.length).toBe(4);
+
+    // 4 corner + 1 center mounting holes = 5 footprints
+    const mountingHoles = pcb.split('"MountingHole"').length - 1;
+    // Each MountingHole footprint references the name in (footprint ...) and (property "Value" "MountingHole")
+    expect(mountingHoles).toBeGreaterThanOrEqual(5);
   });
 });

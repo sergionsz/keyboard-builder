@@ -1,6 +1,8 @@
-import type { Key, Layout } from '../../types';
+import type { Key, Layout, PlateOutline } from '../../types';
 import type { MatrixMap } from '../matrix';
 import { PRO_MICRO_PINS, assignPinsToMatrix, applyPinOverrides } from './proMicro';
+import { filletPolygon } from '../plate';
+import { screwHoleCenters, switchCutoutRing, SCREW_HOLE_DIAMETER } from '../exportStl';
 
 const U_MM = 19.05; // 1U in mm
 const BOARD_MARGIN = 9; // mm margin around keys for board outline
@@ -337,6 +339,25 @@ function emitBoardOutline(hull: { x: number; y: number }[]): string {
   return lines.join('\n');
 }
 
+function plateOutlineMm(plate: PlateOutline, cornerRadius: number): { x: number; y: number }[] {
+  if (plate.vertices.length < 3) return [];
+  const outline = cornerRadius > 0 ? filletPolygon(plate.vertices, cornerRadius) : plate.vertices;
+  return outline.map((v) => ({ x: v.x * U_MM, y: v.y * U_MM }));
+}
+
+function emitMountingHole(x: number, y: number): string {
+  return `  (footprint "MountingHole" (layer "F.Cu") (at ${r(x)} ${r(y)})
+    (uuid "${uid()}")
+    (property "Reference" "" (at 0 0 0) (layer "F.SilkS")
+      (effects (font (size 1 1) (thickness 0.15))))
+    (property "Value" "MountingHole" (at 0 0 0) (layer "F.Fab")
+      (effects (font (size 1 1) (thickness 0.15))))
+    (pad "" np_thru_hole circle (at 0 0) (size ${SCREW_HOLE_DIAMETER} ${SCREW_HOLE_DIAMETER}) (drill ${SCREW_HOLE_DIAMETER})
+      (layers "*.Cu" "*.Mask")
+      (uuid "${uid()}"))
+  )`;
+}
+
 /** Round to 4 decimal places for clean output */
 function r(n: number): number {
   return Math.round(n * 10000) / 10000;
@@ -401,8 +422,8 @@ export function exportKicadPcb(layout: Layout, matrixMap: MatrixMap): string {
       row: cell!.row,
       col: cell!.col,
       index: idx,
-      xMm: r(key.x * U_MM),
-      yMm: r(key.y * U_MM),
+      xMm: r((key.x + key.width / 2) * U_MM),
+      yMm: r((key.y + key.height / 2) * U_MM),
       rotation: key.rotation,
       rowNet: rowNets[cell!.row],
       colNet: colNets[cell!.col],
@@ -463,11 +484,42 @@ export function exportKicadPcb(layout: Layout, matrixMap: MatrixMap): string {
   lines.push(emitProMicroFootprint(pmX, pmY, pinNets));
   lines.push('');
 
-  // Board outline (includes Pro Micro area)
-  const pmPos = placedKeys.length > 0 ? { x: pmX, y: pmY } : undefined;
-  const hull = computeBoardOutline(placedKeys, pmPos);
-  if (hull.length >= 3) {
-    lines.push(emitBoardOutline(hull));
+  // Board outline: when plate outlines are defined, the PCB matches them
+  // exactly and includes mounting holes at the same positions as the plates'
+  // screws. Otherwise, fall back to a convex hull of keys + Pro Micro.
+  const plates = layout.plates ?? [];
+  if (plates.length > 0) {
+    for (const plate of plates) {
+      const outline = plateOutlineMm(plate, layout.plateCornerRadius ?? 0);
+      if (outline.length < 3) continue;
+      lines.push(emitBoardOutline(outline));
+
+      const outerMm = outline.map((v) => [v.x, v.y] as [number, number]);
+      const switchCutouts = layout.keys
+        .filter((k) => {
+          const kcx = (k.x + k.width / 2) * U_MM;
+          const kcy = (k.y + k.height / 2) * U_MM;
+          // pointInRing without dependency: cheap inside test against the polygon
+          let inside = false;
+          for (let i = 0, j = outerMm.length - 1; i < outerMm.length; j = i++) {
+            const [xi, yi] = outerMm[i];
+            const [xj, yj] = outerMm[j];
+            const hit = yi > kcy !== yj > kcy && kcx < ((xj - xi) * (kcy - yi)) / (yj - yi) + xi;
+            if (hit) inside = !inside;
+          }
+          return inside;
+        })
+        .map(switchCutoutRing);
+      for (const [sx, sy] of screwHoleCenters(outerMm, switchCutouts)) {
+        lines.push(emitMountingHole(sx, sy));
+      }
+    }
+  } else {
+    const pmPos = placedKeys.length > 0 ? { x: pmX, y: pmY } : undefined;
+    const hull = computeBoardOutline(placedKeys, pmPos);
+    if (hull.length >= 3) {
+      lines.push(emitBoardOutline(hull));
+    }
   }
 
   lines.push(')');

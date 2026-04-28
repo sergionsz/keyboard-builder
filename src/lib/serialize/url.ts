@@ -69,17 +69,21 @@ function fromBase64url(s: string): Uint8Array {
   return out;
 }
 
-// ── Serialize (v3 binary) ───────────────────────────────────────────
+// ── Serialize (v4 binary) ───────────────────────────────────────────
 //
-// v3 extends v2:
-//   - Version byte = 3
-//   - minGap is always written (not conditional)
-//   - After minGap: matrix overrides section
-//     2 bytes  override count N (uint16)
-//     Per override:
-//       2 bytes  key index (uint16)
-//       1 byte   row (uint8)
-//       1 byte   col (uint8)
+// v4 extends v3:
+//   - Version byte = 4
+//   - Alignment-group count is always written (even when 0), unlike v3
+//     where the section was omitted when empty. Required for the trailing
+//     plate section to have a deterministic position.
+//   - After alignment groups: plate section
+//     2 bytes  plate count P (uint16)
+//     Per plate:
+//       2 bytes  vertex count V (uint16)
+//       Per vertex:
+//         2 bytes  x * 100 (int16)
+//         2 bytes  y * 100 (int16)
+//     2 bytes  plateCornerRadius * 100 (uint16)
 
 export function serializeLayout(layout: Layout): string {
   const idToIndex = new Map<string, number>();
@@ -108,16 +112,20 @@ export function serializeLayout(layout: Layout): string {
     }
   }
 
-  // Estimate buffer size (generous: 20 bytes per key + overhead + alignment groups + matrix overrides)
+  // Estimate buffer size
   const alignGroupBytes = (layout.alignmentGroups ?? []).reduce((sum, g) => sum + 5 + g.keyIds.length * 2, 2);
+  const plateBytes =
+    2 +
+    (layout.plates ?? []).reduce((sum, p) => sum + 2 + p.vertices.length * 4, 0) +
+    2;
   const buf = new ArrayBuffer(
-    4 + 256 + layout.keys.length * 30 + mirrorPairs.length * 4 + 10 + alignGroupBytes + matrixEntries.length * 4 + 4,
+    4 + 256 + layout.keys.length * 30 + mirrorPairs.length * 4 + 10 + alignGroupBytes + matrixEntries.length * 4 + plateBytes + 4,
   );
   const view = new DataView(buf);
   let off = 0;
 
   // Version
-  view.setUint8(off++, 3);
+  view.setUint8(off++, 4);
 
   // Name
   const nameBytes = TEXT.encode(layout.name);
@@ -171,30 +179,45 @@ export function serializeLayout(layout: Layout): string {
     view.setUint8(off++, col);
   }
 
-  // Alignment groups (only if present)
+  // Alignment groups (always written in v4, even when 0)
   const groups = layout.alignmentGroups ?? [];
-  if (groups.length > 0) {
-    view.setUint16(off, groups.length, true); off += 2;
-    for (const group of groups) {
-      view.setUint8(off++, group.axis === 'x' ? 0 : 1);
-      view.setInt16(off, Math.round(group.value * 100), true); off += 2;
-      view.setUint16(off, group.keyIds.length, true); off += 2;
-      for (const keyId of group.keyIds) {
-        const idx = idToIndex.get(keyId);
-        view.setUint16(off, idx ?? 0, true); off += 2;
-      }
+  view.setUint16(off, groups.length, true); off += 2;
+  for (const group of groups) {
+    view.setUint8(off++, group.axis === 'x' ? 0 : 1);
+    view.setInt16(off, Math.round(group.value * 100), true); off += 2;
+    view.setUint16(off, group.keyIds.length, true); off += 2;
+    for (const keyId of group.keyIds) {
+      const idx = idToIndex.get(keyId);
+      view.setUint16(off, idx ?? 0, true); off += 2;
     }
   }
 
+  // Plates
+  const plates = layout.plates ?? [];
+  view.setUint16(off, plates.length, true); off += 2;
+  for (const plate of plates) {
+    view.setUint16(off, plate.vertices.length, true); off += 2;
+    for (const v of plate.vertices) {
+      view.setInt16(off, Math.round(v.x * 100), true); off += 2;
+      view.setInt16(off, Math.round(v.y * 100), true); off += 2;
+    }
+  }
+  view.setUint16(off, Math.round((layout.plateCornerRadius ?? 0) * 100), true); off += 2;
+
   const raw = new Uint8Array(buf, 0, off);
   const compressed = deflateSync(raw, { level: 9 });
-  return '3' + toBase64url(compressed);
+  return '4' + toBase64url(compressed);
 }
 
 // ── Deserialize ─────────────────────────────────────────────────────
 
 export function deserializeLayout(hash: string): Layout | null {
   if (!hash) return null;
+
+  // v4 binary format
+  if (hash.charAt(0) === '4') {
+    return deserializeV4(hash.slice(1));
+  }
 
   // v3 binary format
   if (hash.charAt(0) === '3') {
@@ -377,6 +400,118 @@ function deserializeV3(b64: string): Layout | null {
   }
 
   return { name, keys, mirrorPairs, mirrorAxisX, minGap, matrixOverrides, alignmentGroups, plates: [], plateCornerRadius: 0 };
+}
+
+function deserializeV4(b64: string): Layout | null {
+  let raw: Uint8Array;
+  try {
+    raw = inflateSync(fromBase64url(b64));
+  } catch {
+    return null;
+  }
+
+  const view = new DataView(raw.buffer, raw.byteOffset, raw.byteLength);
+  let off = 0;
+
+  const version = view.getUint8(off++);
+  if (version !== 4) return null;
+
+  // Name
+  const nameLen = view.getUint8(off++);
+  const name = DECODE.decode(raw.subarray(off, off + nameLen));
+  off += nameLen;
+
+  // Keys
+  const keyCount = view.getUint16(off, true); off += 2;
+  const keys: Key[] = [];
+
+  for (let i = 0; i < keyCount; i++) {
+    const x = view.getInt16(off, true) / 100; off += 2;
+    const y = view.getInt16(off, true) / 100; off += 2;
+    const flags = view.getUint8(off++);
+
+    let width = 1;
+    let height = 1;
+    let rotation = 0;
+
+    if (flags & 1) { width = view.getUint16(off, true) / 100; off += 2; }
+    if (flags & 2) { height = view.getUint16(off, true) / 100; off += 2; }
+    if (flags & 4) { rotation = view.getInt16(off, true) / 10; off += 2; }
+
+    const labelLen = view.getUint8(off++);
+    const label = DECODE.decode(raw.subarray(off, off + labelLen));
+    off += labelLen;
+
+    keys.push({ id: uuid(), x, y, width, height, rotation, label });
+  }
+
+  // Mirror pairs
+  const pairCount = view.getUint16(off, true); off += 2;
+  const mirrorPairs: Record<string, string> = {};
+  for (let i = 0; i < pairCount; i++) {
+    const iA = view.getUint16(off, true); off += 2;
+    const iB = view.getUint16(off, true); off += 2;
+    if (iA < keys.length && iB < keys.length) {
+      mirrorPairs[keys[iA].id] = keys[iB].id;
+      mirrorPairs[keys[iB].id] = keys[iA].id;
+    }
+  }
+
+  let mirrorAxisX = 0;
+  if (pairCount > 0) {
+    mirrorAxisX = view.getFloat32(off, true); off += 4;
+  }
+
+  // Min gap
+  const minGap = view.getUint16(off, true) / 100; off += 2;
+
+  // Matrix overrides
+  const matrixOverrides: Record<string, { row: number; col: number }> = {};
+  const overrideCount = view.getUint16(off, true); off += 2;
+  for (let i = 0; i < overrideCount; i++) {
+    const idx = view.getUint16(off, true); off += 2;
+    const row = view.getUint8(off++);
+    const col = view.getUint8(off++);
+    if (idx < keys.length) {
+      matrixOverrides[keys[idx].id] = { row, col };
+    }
+  }
+
+  // Alignment groups (always present in v4, count may be 0)
+  const alignmentGroups: { id: string; axis: 'x' | 'y'; value: number; keyIds: string[] }[] = [];
+  const groupCount = view.getUint16(off, true); off += 2;
+  for (let i = 0; i < groupCount; i++) {
+    const axisVal = view.getUint8(off++);
+    const axis: 'x' | 'y' = axisVal === 0 ? 'x' : 'y';
+    const value = view.getInt16(off, true) / 100; off += 2;
+    const memberCount = view.getUint16(off, true); off += 2;
+    const keyIds: string[] = [];
+    for (let j = 0; j < memberCount; j++) {
+      const idx = view.getUint16(off, true); off += 2;
+      if (idx < keys.length) keyIds.push(keys[idx].id);
+    }
+    if (keyIds.length >= 2) {
+      alignmentGroups.push({ id: uuid(), axis, value, keyIds });
+    }
+  }
+
+  // Plates
+  const plates: { vertices: { x: number; y: number }[] }[] = [];
+  const plateCount = view.getUint16(off, true); off += 2;
+  for (let i = 0; i < plateCount; i++) {
+    const vertCount = view.getUint16(off, true); off += 2;
+    const vertices: { x: number; y: number }[] = [];
+    for (let j = 0; j < vertCount; j++) {
+      const x = view.getInt16(off, true) / 100; off += 2;
+      const y = view.getInt16(off, true) / 100; off += 2;
+      vertices.push({ x, y });
+    }
+    plates.push({ vertices });
+  }
+
+  const plateCornerRadius = view.getUint16(off, true) / 100; off += 2;
+
+  return { name, keys, mirrorPairs, mirrorAxisX, minGap, matrixOverrides, alignmentGroups, plates, plateCornerRadius };
 }
 
 // ── v1 fallback (lz-string JSON) ────────────────────────────────────

@@ -10,6 +10,7 @@
   import { exportKicadSch } from './lib/serialize/kicad';
   import { exportKicadPcb } from './lib/serialize/kicadPcb';
   import { exportPng } from './lib/exportPng';
+  import { exportPlateStl } from './lib/exportStl';
   import { matrix } from './stores/schematic';
 
   let showHelp = $state(false);
@@ -82,6 +83,21 @@
     URL.revokeObjectURL(url);
   }
 
+  function onExportStl() {
+    if ($layout.plates.length === 0) {
+      alert('No plate outlines to export. Switch to Plate mode first.');
+      return;
+    }
+    const stl = exportPlateStl($layout);
+    const blob = new Blob([stl], { type: 'model/stl' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `${$layout.name || 'layout'}.stl`;
+    a.click();
+    URL.revokeObjectURL(url);
+  }
+
   async function onExportPng() {
     const svgEl = document.getElementById('keyboard-canvas') as SVGSVGElement | null;
     if (!svgEl) return;
@@ -129,6 +145,8 @@
       {:else if $editorMode === 'schematic'}
         <button onclick={onExportKicad}>Export Schematic</button>
         <button onclick={onExportKicadPcb}>Export PCB</button>
+      {:else if $editorMode === 'plate'}
+        <button onclick={onExportStl}>Export STL</button>
       {/if}
       {#if $editorMode !== 'plate'}
         <button onclick={onExportPng}>Export PNG</button>

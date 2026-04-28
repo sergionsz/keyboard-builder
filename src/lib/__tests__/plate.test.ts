@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { generatePlateOutlines, filletPolygon, type OutlineRing } from '../plate';
+import { generatePlateOutlines, filletPolygon, simplifyRing, type OutlineRing } from '../plate';
 import type { Key } from '../../types';
 
 function makeKey(overrides: Partial<Key> & { x: number; y: number }): Key {
@@ -152,5 +152,71 @@ describe('filletPolygon', () => {
     // Total points should be 4 * (arcPoints + 1) for a square
     // With 90-degree corners and 8 points per 90 degrees: 4 * (8+1) = 36
     expect(result.length % 4).toBe(0);
+  });
+});
+
+describe('simplifyRing', () => {
+  it('removes vertices that lie on a straight edge', () => {
+    // Square with a redundant vertex in the middle of the bottom edge
+    const ring: OutlineRing = [
+      { x: 0, y: 0 },
+      { x: 0.5, y: 0 }, // redundant — lies on edge from (0,0) to (1,0)
+      { x: 1, y: 0 },
+      { x: 1, y: 1 },
+      { x: 0, y: 1 },
+    ];
+    const simplified = simplifyRing(ring);
+    expect(simplified).toHaveLength(4);
+    expect(simplified.find((v) => v.x === 0.5 && v.y === 0)).toBeUndefined();
+  });
+
+  it('keeps real corners (90°)', () => {
+    const square: OutlineRing = [
+      { x: 0, y: 0 },
+      { x: 1, y: 0 },
+      { x: 1, y: 1 },
+      { x: 0, y: 1 },
+    ];
+    expect(simplifyRing(square)).toHaveLength(4);
+  });
+
+  it('removes vertices within the user-facing 5° threshold', () => {
+    // Bottom edge has a ~3° kink in the middle that the user wants gone
+    const ring: OutlineRing = [
+      { x: 0, y: 0 },
+      { x: 0.5, y: 0.013 }, // ~3° deviation from straight
+      { x: 1, y: 0 },
+      { x: 1, y: 1 },
+      { x: 0, y: 1 },
+    ];
+    const simplified = simplifyRing(ring, 5);
+    expect(simplified).toHaveLength(4);
+  });
+
+  it('iterates so a long chain of collinear vertices fully collapses', () => {
+    // 10 collinear vertices on bottom edge — single-pass would only remove
+    // some, since each removal can expose newly-collinear neighbors.
+    const ring: OutlineRing = [{ x: 0, y: 0 }];
+    for (let i = 1; i < 10; i++) ring.push({ x: i / 10, y: 0 });
+    ring.push({ x: 1, y: 0 });
+    ring.push({ x: 1, y: 1 });
+    ring.push({ x: 0, y: 1 });
+    const simplified = simplifyRing(ring);
+    expect(simplified).toHaveLength(4);
+  });
+
+  it('merges vertices closer than minDistU and removes the redundant points', () => {
+    // The first two and the last two are coincident-ish (within 0.05U);
+    // expect a cleaned 4-vertex square.
+    const ring: OutlineRing = [
+      { x: 0, y: 0 },
+      { x: 0.01, y: 0.01 }, // close to (0,0)
+      { x: 1, y: 0 },
+      { x: 1, y: 1 },
+      { x: 0.99, y: 1.01 }, // close to (1,1)
+      { x: 0, y: 1 },
+    ];
+    const simplified = simplifyRing(ring, 5, 0.05);
+    expect(simplified).toHaveLength(4);
   });
 });

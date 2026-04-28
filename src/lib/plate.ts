@@ -56,15 +56,33 @@ function keyToRectMM(key: Key, paddingMM: number): Ring {
 }
 
 /**
- * Remove near-collinear vertices from a ring.
- * A vertex is collinear if the angle between its two edges is within `thresholdDeg`.
+ * Drop the second vertex of any consecutive pair within `minDistU` of each
+ * other (including the wrap-around pair), so a string of nearly-coincident
+ * points collapses to a single point.
  */
-function simplifyRing(ring: OutlineRing, thresholdDeg = 1): OutlineRing {
-  if (ring.length < 3) return ring;
+function mergeCloseVertices(ring: OutlineRing, minDistU: number): OutlineRing {
+  if (ring.length < 3 || minDistU <= 0) return ring;
+  const result: OutlineRing = [];
+  for (const v of ring) {
+    if (result.length > 0) {
+      const last = result[result.length - 1];
+      if (Math.hypot(v.x - last.x, v.y - last.y) < minDistU) continue;
+    }
+    result.push(v);
+  }
+  if (result.length >= 3) {
+    const last = result[result.length - 1];
+    const first = result[0];
+    if (Math.hypot(first.x - last.x, first.y - last.y) < minDistU) result.pop();
+  }
+  return result.length >= 3 ? result : ring;
+}
 
+/** Single-pass collinearity removal. Does not iterate. */
+function removeCollinear(ring: OutlineRing, thresholdDeg: number): OutlineRing {
+  if (ring.length < 3) return ring;
   const result: OutlineRing = [];
   const n = ring.length;
-
   for (let i = 0; i < n; i++) {
     const prev = ring[(i - 1 + n) % n];
     const curr = ring[i];
@@ -75,7 +93,6 @@ function simplifyRing(ring: OutlineRing, thresholdDeg = 1): OutlineRing {
     const dx2 = next.x - curr.x;
     const dy2 = next.y - curr.y;
 
-    // Cross product magnitude tells us how far from collinear
     const cross = dx1 * dy2 - dy1 * dx2;
     const dot = dx1 * dx2 + dy1 * dy2;
     const angle = Math.abs(Math.atan2(cross, dot)) * (180 / Math.PI);
@@ -84,8 +101,34 @@ function simplifyRing(ring: OutlineRing, thresholdDeg = 1): OutlineRing {
       result.push(curr);
     }
   }
-
   return result.length >= 3 ? result : ring;
+}
+
+/**
+ * Remove near-collinear vertices and (optionally) merge near-coincident ones
+ * from a ring. Repeats both passes until the ring stops shrinking, so a long
+ * collinear chain or a cluster of close vertices collapses fully on a single
+ * call instead of leaving residue that needed another pass to remove.
+ *
+ * @param thresholdDeg  A vertex is collinear if the angle between its two
+ *                      edges deviates from straight by less than this.
+ * @param minDistU      If > 0, vertices closer than this in U-space are
+ *                      merged. Default 0 disables distance merging.
+ */
+export function simplifyRing(
+  ring: OutlineRing,
+  thresholdDeg = 1,
+  minDistU = 0,
+): OutlineRing {
+  if (ring.length < 3) return ring;
+  let current = ring;
+  for (let iter = 0; iter < 100; iter++) {
+    const before = current.length;
+    current = mergeCloseVertices(current, minDistU);
+    current = removeCollinear(current, thresholdDeg);
+    if (current.length === before) break;
+  }
+  return current;
 }
 
 /**
