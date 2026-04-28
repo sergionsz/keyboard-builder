@@ -368,6 +368,8 @@
 
   // --- Plate vertex drag start ---
   let vertexDidDrag = $state(false);
+  /** Stored at pointerdown so pointerup can finalize a click vs. drag */
+  let vertexClickContext = $state<{ vk: string; shiftKey: boolean } | null>(null);
 
   function onVertexDragStart(plateIdx: number, vertexIdx: number, e: PointerEvent) {
     if (e.button !== 0) return;
@@ -376,8 +378,16 @@
     draggingVertex = { plateIdx, vertexIdx };
 
     const vk = vertexKey(plateIdx, vertexIdx);
-    if (!selectedVertices.has(vk)) {
-      // Clicking an unselected vertex: select only this one
+    vertexClickContext = { vk, shiftKey: e.shiftKey };
+
+    if (e.shiftKey) {
+      // Shift+click: toggle this vertex in the selection
+      const next = new Set(selectedVertices);
+      if (next.has(vk)) next.delete(vk);
+      else next.add(vk);
+      selectedVertices = next;
+    } else if (!selectedVertices.has(vk)) {
+      // Plain click on an unselected vertex: select only this one
       selectedVertices = new Set([vk]);
     }
     // else: already selected, keep multi-selection for group drag
@@ -434,8 +444,8 @@
 
     // Left click on empty canvas
     if (e.button === 0 && !$spaceHeld) {
-      // Deselect vertices in plate mode
-      if ($editorMode === 'plate') selectedVertices = new Set();
+      // Deselect vertices in plate mode (preserved when shift is held)
+      if ($editorMode === 'plate' && !e.shiftKey) selectedVertices = new Set();
 
       const screenPt = eventToSvgScreen(e);
       const canvasPt = screenToCanvas(screenPt, $pan, $zoom);
@@ -617,8 +627,14 @@
 
   function onPointerUp(e: PointerEvent) {
     if (draggingVertex) {
-      if (vertexDidDrag) endContinuous();
+      if (vertexDidDrag) {
+        endContinuous();
+      } else if (vertexClickContext && !vertexClickContext.shiftKey) {
+        // Click without drag (no shift): collapse selection to just this vertex.
+        selectedVertices = new Set([vertexClickContext.vk]);
+      }
       draggingVertex = null;
+      vertexClickContext = null;
       svgEl.releasePointerCapture(e.pointerId);
       return;
     }
@@ -632,21 +648,23 @@
       const w = Math.max(marqueeEndU.x, marqueeStartU.x) - left;
       const h = Math.max(marqueeEndU.y, marqueeStartU.y) - top;
 
-      // Tiny marquee = just a click → deselect
+      // Tiny marquee = just a click → deselect (preserved when shift is held)
       if (w < 0.05 && h < 0.05) {
-        if ($editorMode === 'plate') {
-          selectedVertices = new Set();
-        } else if (!e.shiftKey) {
-          selection.set(new Set());
+        if (!e.shiftKey) {
+          if ($editorMode === 'plate') {
+            selectedVertices = new Set();
+          } else {
+            selection.set(new Set());
+          }
         }
         return;
       }
 
-      // In plate mode, marquee selects vertices
+      // In plate mode, marquee selects vertices (shift adds to existing)
       if ($editorMode === 'plate') {
         const right = left + w;
         const bottom = top + h;
-        const sel = new Set<string>();
+        const sel = e.shiftKey ? new Set(selectedVertices) : new Set<string>();
         for (let pi = 0; pi < $layout.plates.length; pi++) {
           for (let vi = 0; vi < $layout.plates[pi].vertices.length; vi++) {
             const v = $layout.plates[pi].vertices[vi];

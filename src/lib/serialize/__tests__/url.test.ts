@@ -50,11 +50,53 @@ describe('URL serialize/deserialize (v2 binary)', () => {
       ],
     });
     const hash = serializeLayout(layout);
-    expect(hash.charAt(0)).toBe('3'); // v3 prefix
+    expect(hash.charAt(0)).toBe('4'); // v4 prefix
     const restored = deserializeLayout(hash);
     expect(restored).not.toBeNull();
     expect(restored!.name).toBe('My Board');
     expectKeysMatch(restored!.keys, layout.keys);
+  });
+
+  it('round-trips plate outlines and corner radius', () => {
+    const layout = makeLayout({
+      keys: [makeKey({ label: 'A', x: 0, y: 0 })],
+      plates: [
+        {
+          vertices: [
+            { x: -0.31, y: -0.31 },
+            { x: 1.31, y: -0.31 },
+            { x: 1.31, y: 1.31 },
+            { x: -0.31, y: 1.31 },
+          ],
+        },
+      ],
+      plateCornerRadius: 3.5,
+    });
+    const hash = serializeLayout(layout);
+    const restored = deserializeLayout(hash);
+    expect(restored).not.toBeNull();
+    expect(restored!.plateCornerRadius).toBeCloseTo(3.5, 2);
+    expect(restored!.plates).toHaveLength(1);
+    expect(restored!.plates[0].vertices).toHaveLength(4);
+    for (let i = 0; i < 4; i++) {
+      expect(restored!.plates[0].vertices[i].x).toBeCloseTo(layout.plates[0].vertices[i].x, 2);
+      expect(restored!.plates[0].vertices[i].y).toBeCloseTo(layout.plates[0].vertices[i].y, 2);
+    }
+  });
+
+  it('round-trips multi-plate layouts (split keyboard)', () => {
+    const layout = makeLayout({
+      keys: [makeKey({ label: 'L', x: 0, y: 0 }), makeKey({ label: 'R', x: 8, y: 0 })],
+      plates: [
+        { vertices: [{ x: 0, y: 0 }, { x: 1, y: 0 }, { x: 1, y: 1 }, { x: 0, y: 1 }] },
+        { vertices: [{ x: 8, y: 0 }, { x: 9, y: 0 }, { x: 9, y: 1 }, { x: 8, y: 1 }] },
+      ],
+    });
+    const hash = serializeLayout(layout);
+    const restored = deserializeLayout(hash);
+    expect(restored).not.toBeNull();
+    expect(restored!.plates).toHaveLength(2);
+    expect(restored!.plates[1].vertices[0].x).toBeCloseTo(8, 2);
   });
 
   it('preserves non-default width, height, and rotation', () => {
