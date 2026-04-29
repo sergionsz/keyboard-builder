@@ -118,7 +118,7 @@ interface PlacedKey {
   bridgeNet: NetInfo;
 }
 
-function emitSwitchFootprint(pk: PlacedKey, geometry: SwitchGeometry): string {
+function emitSwitchFootprint(pk: PlacedKey, geometry: SwitchGeometry, hotswap: boolean): string {
   const { xMm, yMm, rotation, index, key, rowNet, bridgeNet } = pk;
   const label = sanitize(key.label) || `R${pk.row}C${pk.col}`;
   const atRot = rotation !== 0 ? ` ${rotation}` : '';
@@ -138,6 +138,17 @@ function emitSwitchFootprint(pk: PlacedKey, geometry: SwitchGeometry): string {
       (uuid "${uid()}"))`);
     extras.push(`    (pad "" np_thru_hole circle (at ${fp.mountR.x} ${fp.mountR.y}) (size ${fp.mountDrill} ${fp.mountDrill}) (drill ${fp.mountDrill})
       (layers "*.Cu" "*.Mask")
+      (uuid "${uid()}"))`);
+  }
+  if (hotswap && fp.hotswapSocket) {
+    const sock = fp.hotswapSocket;
+    extras.push(`    (pad "1" smd roundrect (at ${sock.pad1.x} ${sock.pad1.y}) (size ${sock.padSize.w} ${sock.padSize.h}) (roundrect_rratio 0.25)
+      (layers "B.Cu" "B.Paste" "B.Mask")
+      (net ${rowNet.id} "${rowNet.name}")
+      (uuid "${uid()}"))`);
+    extras.push(`    (pad "2" smd roundrect (at ${sock.pad2.x} ${sock.pad2.y}) (size ${sock.padSize.w} ${sock.padSize.h}) (roundrect_rratio 0.25)
+      (layers "B.Cu" "B.Paste" "B.Mask")
+      (net ${bridgeNet.id} "${bridgeNet.name}")
       (uuid "${uid()}"))`);
   }
 
@@ -475,8 +486,9 @@ export function exportKicadPcb(layout: Layout, matrixMap: MatrixMap): string {
   lines.push('');
 
   // Key footprints
+  const hotswap = layout.hotswap === true;
   for (const pk of placedKeys) {
-    lines.push(emitSwitchFootprint(pk, geometry));
+    lines.push(emitSwitchFootprint(pk, geometry, hotswap));
     lines.push(emitDiodeFootprint(pk, geometry));
   }
 

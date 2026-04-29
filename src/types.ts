@@ -51,4 +51,6 @@ export interface Layout {
   pinOverrides?: Record<number, string>;
   /** Mechanical switch family. Affects 1U pitch, plate cutout, and PCB footprint. Defaults to MX. */
   switchType?: SwitchType;
+  /** When true, the PCB export adds Kailh-style hot-swap socket pads on the back layer. */
+  hotswap?: boolean;
 }

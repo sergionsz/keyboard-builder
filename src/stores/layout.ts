@@ -87,6 +87,7 @@ function createSampleLayout(): Layout {
     plates: [],
     plateCornerRadius: 0,
     switchType: 'mx',
+    hotswap: false,
   };
 }
 

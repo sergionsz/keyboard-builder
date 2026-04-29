@@ -151,6 +151,31 @@ describe('exportKicadPcb', () => {
     expect(pcb).toContain('keyboard-builder:SW_Cherry_MX');
   });
 
+  it('omits hot-swap socket pads when hotswap is off', () => {
+    const layout = makeLayout([makeKey({ label: 'A', x: 0, y: 0 })]);
+    const pcb = exportKicadPcb(layout, { A: { row: 0, col: 0 } });
+    const swSection = pcb.split('keyboard-builder:SW_Cherry_MX')[1].split('\n  )')[0];
+    // No SMD pads should appear inside the switch footprint when hotswap is off
+    expect(swSection).not.toContain('smd');
+  });
+
+  it('emits hot-swap socket SMD pads on B.Cu when hotswap is on', () => {
+    const layout: Layout = {
+      ...makeLayout([makeKey({ label: 'A', x: 0, y: 0 })]),
+      hotswap: true,
+    };
+    const pcb = exportKicadPcb(layout, { A: { row: 0, col: 0 } });
+    const swSection = pcb.split('keyboard-builder:SW_Cherry_MX')[1].split('\n  )')[0];
+
+    // Two SMD socket pads on B.Cu sharing nets with the switch through-holes
+    const smdPads = swSection.match(/\(pad "[12]" smd /g) ?? [];
+    expect(smdPads.length).toBe(2);
+    expect(swSection).toContain('"B.Cu" "B.Paste" "B.Mask"');
+    // Pad nets match the switch through-hole nets
+    expect(swSection).toContain('"ROW0"');
+    expect(swSection).toContain('NET_SW1_D1');
+  });
+
   it('places a Pro Micro footprint', () => {
     const keys = [
       makeKey({ label: 'A', x: 0, y: 0 }),

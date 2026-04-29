@@ -50,7 +50,7 @@ describe('URL serialize/deserialize (v2 binary)', () => {
       ],
     });
     const hash = serializeLayout(layout);
-    expect(hash.charAt(0)).toBe('6'); // v6 prefix
+    expect(hash.charAt(0)).toBe('7'); // v7 prefix
     const restored = deserializeLayout(hash);
     expect(restored).not.toBeNull();
     expect(restored!.name).toBe('My Board');
@@ -210,6 +210,22 @@ describe('URL serialize/deserialize (v2 binary)', () => {
     const layout = makeLayout({ name: 'Ergodox Clone', keys: [makeKey({ label: 'A', x: 0, y: 0 })] });
     const restored = deserializeLayout(serializeLayout(layout))!;
     expect(restored.name).toBe('Ergodox Clone');
+  });
+
+  it('round-trips the hotswap flag', () => {
+    const layout = makeLayout({
+      keys: [makeKey({ label: 'A', x: 0, y: 0 })],
+      hotswap: true,
+    });
+    const restored = deserializeLayout(serializeLayout(layout))!;
+    expect(restored.hotswap).toBe(true);
+
+    const layoutOff = makeLayout({
+      keys: [makeKey({ label: 'A', x: 0, y: 0 })],
+      hotswap: false,
+    });
+    const restoredOff = deserializeLayout(serializeLayout(layoutOff))!;
+    expect(restoredOff.hotswap).toBe(false);
   });
 
   it('generates fresh IDs on deserialize', () => {

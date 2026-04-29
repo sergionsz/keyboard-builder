@@ -1,10 +1,26 @@
 <script lang="ts">
-  import { layout } from '../stores/layout';
+  import { layout, pushUndoExported, updateLayoutField } from '../stores/layout';
   import { selection } from '../stores/editor';
   import { matrix, matrixErrors, resetMatrix, setKeyMatrix, primaryColor, secondaryColor, schematicFocus, pinAssignments, pinErrors, setPinNet, resetPins, type SchematicFocus } from '../stores/schematic';
   import { matrixDimensions } from '../lib/matrix';
   import { PRO_MICRO_PINS } from '../lib/serialize/proMicro';
+  import { SWITCH_TYPE_LABELS, type SwitchType } from '../lib/switchGeometry';
   import type { Key } from '../types';
+
+  let currentSwitchType = $derived($layout.switchType ?? 'mx');
+  let hotswap = $derived($layout.hotswap === true);
+
+  function onSwitchTypeChange(e: Event) {
+    const val = (e.currentTarget as HTMLSelectElement).value as SwitchType;
+    pushUndoExported();
+    updateLayoutField('switchType', val);
+  }
+
+  function onHotswapChange(e: Event) {
+    const checked = (e.currentTarget as HTMLInputElement).checked;
+    pushUndoExported();
+    updateLayoutField('hotswap', checked);
+  }
 
   let dims = $derived(matrixDimensions($matrix));
 
@@ -107,6 +123,27 @@
 </script>
 
 <aside class="panel">
+  <h2>PCB</h2>
+
+  <div class="field">
+    <label for="switch-type">Switch Type</label>
+    <select id="switch-type" value={currentSwitchType} onchange={onSwitchTypeChange}>
+      {#each Object.entries(SWITCH_TYPE_LABELS) as [value, label]}
+        <option {value}>{label}</option>
+      {/each}
+    </select>
+  </div>
+
+  <label class="checkbox-field" for="hotswap-toggle">
+    <input
+      id="hotswap-toggle"
+      type="checkbox"
+      checked={hotswap}
+      onchange={onHotswapChange}
+    />
+    <span>Hot-swap sockets</span>
+  </label>
+
   <h2>Matrix Assignment</h2>
 
   <div class="dims">
@@ -287,6 +324,13 @@
     color: #ccc;
   }
 
+  h2 + h2,
+  .checkbox-field + h2 {
+    margin-top: 16px;
+    padding-top: 12px;
+    border-top: 1px solid #333;
+  }
+
   h3 {
     margin: 0;
     font-size: 12px;
@@ -373,6 +417,11 @@
     flex: 1;
   }
 
+  .panel > .field {
+    flex: none;
+    margin-bottom: 10px;
+  }
+
   label {
     font-size: 11px;
     color: #888;
@@ -380,7 +429,8 @@
     letter-spacing: 0.5px;
   }
 
-  input {
+  input,
+  .panel > .field select {
     background: #2a2a2a;
     border: 1px solid #444;
     border-radius: 4px;
@@ -392,9 +442,28 @@
     box-sizing: border-box;
   }
 
-  input:focus {
+  input:focus,
+  .panel > .field select:focus {
     outline: none;
     border-color: #4a9eff;
+  }
+
+  .checkbox-field {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 12px;
+    font-size: 12px;
+    color: #ccc;
+    cursor: pointer;
+    text-transform: none;
+    letter-spacing: normal;
+  }
+
+  .checkbox-field input {
+    width: auto;
+    margin: 0;
+    cursor: pointer;
   }
 
   .matrix-table-section {

@@ -2,22 +2,14 @@
   import { layout, setPlates, pushUndoExported, updateLayoutField, resetScrewsToAuto } from '../stores/layout';
   import { plateKeyDisplay, type PlateKeyDisplay } from '../stores/editor';
   import { generatePlateOutlines, simplifyRing } from '../lib/plate';
-  import { SWITCH_TYPE_LABELS, type SwitchType } from '../lib/switchGeometry';
 
   let cornerRadius = $derived($layout.plateCornerRadius);
-  let currentSwitchType = $derived($layout.switchType ?? 'mx');
   let hasManualScrews = $derived($layout.plates.some((p) => p.screws !== undefined));
 
   function onRadiusInput(e: Event) {
     const val = parseFloat((e.currentTarget as HTMLInputElement).value);
     pushUndoExported();
     updateLayoutField('plateCornerRadius', isNaN(val) || val < 0 ? 0 : val);
-  }
-
-  function onSwitchTypeChange(e: Event) {
-    const val = (e.currentTarget as HTMLSelectElement).value as SwitchType;
-    pushUndoExported();
-    updateLayoutField('switchType', val);
   }
 
   function regenerate() {
@@ -81,15 +73,6 @@
 
   <div class="stats">
     {plateCount} plate{plateCount !== 1 ? 's' : ''}, {vertexCount} vertices
-  </div>
-
-  <div class="field">
-    <label for="switch-type">Switch Type</label>
-    <select id="switch-type" value={currentSwitchType} onchange={onSwitchTypeChange}>
-      {#each Object.entries(SWITCH_TYPE_LABELS) as [value, label]}
-        <option {value}>{label}</option>
-      {/each}
-    </select>
   </div>
 
   <div class="field">
@@ -176,8 +159,7 @@
     letter-spacing: 0.5px;
   }
 
-  input,
-  select {
+  input {
     background: #2a2a2a;
     border: 1px solid #444;
     border-radius: 4px;
@@ -189,8 +171,7 @@
     box-sizing: border-box;
   }
 
-  input:focus,
-  select:focus {
+  input:focus {
     outline: none;
     border-color: #4a9eff;
   }
