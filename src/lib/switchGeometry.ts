@@ -34,6 +34,18 @@ export interface SwitchFootprint {
   mountDrill: number;
   /** Diode placement offset from switch center, mm. */
   diodeOffset: { x: number; y: number };
+  /**
+   * Hot-swap socket geometry. SMT pads on the back layer that share nets with
+   * pin1/pin2. null if this switch family has no compatible socket.
+   */
+  hotswapSocket: {
+    /** Socket pad sharing the pin1 (row) net, mm relative to switch center. */
+    pad1: { x: number; y: number };
+    /** Socket pad sharing the pin2 (bridge) net, mm relative to switch center. */
+    pad2: { x: number; y: number };
+    /** SMT pad size, mm. */
+    padSize: { w: number; h: number };
+  } | null;
 }
 
 export interface SwitchGeometry {
@@ -62,6 +74,14 @@ const MX_GEOMETRY: SwitchGeometry = {
     mountR: { x: 5.08, y: 0 },
     mountDrill: 1.7,
     diodeOffset: { x: 0, y: 5.08 },
+    // Kailh CPG151101S11 hot-swap socket: SMT pads extend left/right from the
+    // through-holes. Both Choc V2 and MX low-profile are MX-pin-compatible and
+    // reuse this geometry.
+    hotswapSocket: {
+      pad1: { x: -7.085, y: -2.54 },
+      pad2: { x: 5.842, y: -5.08 },
+      padSize: { w: 2.55, h: 2.5 },
+    },
   },
 };
 
