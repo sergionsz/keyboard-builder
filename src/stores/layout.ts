@@ -4,6 +4,7 @@ import { uuid } from '../lib/uuid';
 import { serializeLayout, deserializeLayout } from '../lib/serialize/url';
 import { roundPos } from '../lib/snap';
 import { computeMTV, computePullCorrection } from '../lib/collision';
+import { getSwitchGeometry } from '../lib/switchGeometry';
 import { minGap } from './editor';
 
 /** Sample layout: a basic 60% first row to demonstrate rendering */
@@ -85,6 +86,7 @@ function createSampleLayout(): Layout {
     alignmentGroups: [],
     plates: [],
     plateCornerRadius: 0,
+    switchType: 'mx',
   };
 }
 
@@ -95,7 +97,10 @@ function deepClone(layout: Layout): Layout {
     mirrorPairs: { ...layout.mirrorPairs },
     matrixOverrides: { ...layout.matrixOverrides },
     alignmentGroups: layout.alignmentGroups.map((g) => ({ ...g, keyIds: [...g.keyIds] })),
-    plates: layout.plates.map((p) => ({ vertices: p.vertices.map((v) => ({ ...v })) })),
+    plates: layout.plates.map((p) => ({
+      vertices: p.vertices.map((v) => ({ ...v })),
+      screws: p.screws ? p.screws.map((s) => ({ ...s })) : undefined,
+    })),
   };
 }
 
@@ -424,8 +429,7 @@ export function enforceMinGap() {
   const l = get(layout);
   if (l.keys.length < 2) return;
 
-  const MM_PER_U = 19.05;
-  const gapU = gap / MM_PER_U;
+  const gapU = gap / getSwitchGeometry(l.switchType).mmPerU;
 
   // Work on mutable copies
   const keys = l.keys.map((k) => ({ ...k }));
@@ -539,7 +543,7 @@ export function movePlateVertex(plateIdx: number, vertexIdx: number, x: number, 
       const vertices = p.vertices.map((v, vi) =>
         vi === vertexIdx ? { x, y } : v,
       );
-      return { vertices };
+      return { ...p, vertices };
     });
     return { ...l, plates };
   });
@@ -556,7 +560,7 @@ export function movePlateVertices(keys: Set<string>, dx: number, dy: number) {
         }
         return v;
       });
-      return { vertices };
+      return { ...p, vertices };
     });
     return { ...l, plates };
   });
@@ -570,7 +574,7 @@ export function addPlateVertex(plateIdx: number, afterIdx: number, x: number, y:
       if (pi !== plateIdx) return p;
       const vertices = [...p.vertices];
       vertices.splice(afterIdx + 1, 0, { x, y });
-      return { vertices };
+      return { ...p, vertices };
     });
     return { ...l, plates };
   });
@@ -597,10 +601,106 @@ export function removePlateVertices(keys: Set<string>) {
     const plates = l.plates.map((p, pi) => {
       const toRemove = removalsPerPlate.get(pi);
       if (!toRemove) return p;
-      return { vertices: p.vertices.filter((_, vi) => !toRemove.has(vi)) };
+      return { ...p, vertices: p.vertices.filter((_, vi) => !toRemove.has(vi)) };
     });
     return { ...l, plates };
   });
+}
+
+// --- Plate screw helpers ---
+//
+// A plate is in "auto" mode while `screws` is undefined and in "manual" mode
+// once the array exists (even if empty). The Canvas materializes the auto
+// positions into the array on the first edit so subsequent drags/adds/removes
+// have something concrete to mutate.
+
+/** Replace the manual screw list on a plate, or set undefined to fall back to
+ *  auto-placement. Pushes undo. */
+export function setPlateScrews(plateIdx: number, screws: { x: number; y: number }[] | undefined) {
+  pushUndo();
+  layout.update((l) => {
+    const plates = l.plates.map((p, pi) =>
+      pi === plateIdx ? { ...p, screws: screws ? screws.map((s) => ({ ...s })) : undefined } : p,
+    );
+    return { ...l, plates };
+  });
+}
+
+/** Move a single manual screw to a new position. No undo push; for use during drag. */
+export function moveScrew(plateIdx: number, screwIdx: number, x: number, y: number) {
+  layout.update((l) => {
+    const plates = l.plates.map((p, pi) => {
+      if (pi !== plateIdx || !p.screws) return p;
+      const screws = p.screws.map((s, si) => (si === screwIdx ? { x, y } : s));
+      return { ...p, screws };
+    });
+    return { ...l, plates };
+  });
+}
+
+/** Move multiple manual screws by a delta. No undo push; for use during drag.
+ *  `keys` is a set of "plateIdx:screwIdx" strings. */
+export function moveScrews(keys: Set<string>, dx: number, dy: number) {
+  layout.update((l) => {
+    const plates = l.plates.map((p, pi) => {
+      if (!p.screws) return p;
+      const screws = p.screws.map((s, si) =>
+        keys.has(`${pi}:${si}`) ? { x: s.x + dx, y: s.y + dy } : s,
+      );
+      return { ...p, screws };
+    });
+    return { ...l, plates };
+  });
+}
+
+/** Add a screw to a plate at the given U position (pushes undo). The plate
+ *  must already be in manual mode (screws defined). */
+export function addScrew(plateIdx: number, x: number, y: number) {
+  pushUndo();
+  layout.update((l) => {
+    const plates = l.plates.map((p, pi) => {
+      if (pi !== plateIdx) return p;
+      const screws = [...(p.screws ?? []), { x, y }];
+      return { ...p, screws };
+    });
+    return { ...l, plates };
+  });
+}
+
+/** Remove multiple manual screws (single undo push).
+ *  `keys` is a set of "plateIdx:screwIdx" strings. */
+export function removeScrews(keys: Set<string>) {
+  if (keys.size === 0) return;
+  const removalsPerPlate = new Map<number, Set<number>>();
+  for (const key of keys) {
+    const [pi, si] = key.split(':').map(Number);
+    if (!removalsPerPlate.has(pi)) removalsPerPlate.set(pi, new Set());
+    removalsPerPlate.get(pi)!.add(si);
+  }
+  pushUndo();
+  layout.update((l) => {
+    const plates = l.plates.map((p, pi) => {
+      const toRemove = removalsPerPlate.get(pi);
+      if (!toRemove || !p.screws) return p;
+      return { ...p, screws: p.screws.filter((_, si) => !toRemove.has(si)) };
+    });
+    return { ...l, plates };
+  });
+}
+
+/** Clear manual screw lists on every plate, returning the keyboard to
+ *  auto-placement. Pushes undo. */
+export function resetScrewsToAuto() {
+  const l = get(layout);
+  if (!l.plates.some((p) => p.screws !== undefined)) return;
+  pushUndo();
+  layout.update((l) => ({
+    ...l,
+    plates: l.plates.map((p) => {
+      const { screws: _drop, ...rest } = p;
+      return rest;
+    }),
+  }));
 }
 
 /** Move the mirror axis to a new X position (in U). No undo push; for use during drag. */

@@ -1,6 +1,6 @@
 <script lang="ts">
-  import { layout, moveKey, moveKeys, updateKeys, addKey, deleteKeys, beginContinuous, endContinuous, undo, redo, setMirrorAxisX, linkMirrorPair, unlinkMirrorPair, createAlignmentGroup, setPlates, movePlateVertex, movePlateVertices, addPlateVertex, removePlateVertices } from '../stores/layout';
-  import { pan, zoom, spaceHeld, altHeld, drag, gridSnap, minGap, selection, rotating } from '../stores/editor';
+  import { layout, moveKey, moveKeys, updateKeys, addKey, deleteKeys, beginContinuous, endContinuous, undo, redo, setMirrorAxisX, linkMirrorPair, unlinkMirrorPair, createAlignmentGroup, setPlates, movePlateVertex, movePlateVertices, addPlateVertex, removePlateVertices, setPlateScrews, moveScrew, moveScrews, addScrew, removeScrews } from '../stores/layout';
+  import { pan, zoom, spaceHeld, altHeld, drag, gridSnap, minGap, selection, rotating, plateKeyDisplay } from '../stores/editor';
   import { SCALE, screenToCanvas, canvasPxToU } from '../lib/coords';
   import { snapToGrid, snapAngle, roundPos, roundRot, computeAlignmentGuides, applyGuideSnap, type AlignmentGuide } from '../lib/snap';
   import { wouldViolateGap, keysOverlap } from '../lib/collision';
@@ -11,6 +11,8 @@
   import type { MatrixAssignment } from '../lib/matrix';
   import { generatePlateOutlines, filletPolygon, type PlatePolygon } from '../lib/plate';
   import { PRO_MICRO_PINS } from '../lib/serialize/proMicro';
+  import { getSwitchGeometry } from '../lib/switchGeometry';
+  import { resolvePlateScrewsU, isValidPlateScrewU } from '../lib/exportStl';
 
   // MCU visualization constants (in canvas units = U)
   const MCU_W = 2;      // width in U
@@ -185,12 +187,14 @@
     return ids;
   });
 
-  const MM_PER_U = 19.05;
+  let MM_PER_U = $derived(getSwitchGeometry($layout.switchType).mmPerU);
+  /** Switch cutout side length in U coordinates (for plate-mode overlay). */
+  let cutoutU = $derived(getSwitchGeometry($layout.switchType).cutoutSize / MM_PER_U);
 
   // Auto-generate plate outlines when entering plate mode with none defined
   $effect(() => {
     if ($editorMode === 'plate' && $layout.plates.length === 0 && $layout.keys.length > 0) {
-      const result = generatePlateOutlines($layout.keys);
+      const result = generatePlateOutlines($layout.keys, undefined, $layout.switchType);
       setPlates(result.plates.map((verts) => ({ vertices: verts })));
     }
   });
@@ -208,10 +212,62 @@
     return selectedVertices.has(vertexKey(plateIdx, vertexIdx));
   }
 
-  // Clear vertex selection when leaving plate mode; clear key selection when entering it
+  // --- Plate screw state ---
+  let draggingScrew = $state<{ plateIdx: number; screwIdx: number } | null>(null);
+  let screwDidDrag = $state(false);
+  let screwClickContext = $state<{ sk: string; shiftKey: boolean } | null>(null);
+  /** Set of selected screws, encoded as "plateIdx:screwIdx" strings */
+  let selectedScrews = $state<Set<string>>(new Set());
+
+  function screwKey(plateIdx: number, screwIdx: number): string {
+    return `${plateIdx}:${screwIdx}`;
+  }
+
+  function isScrewSelected(plateIdx: number, screwIdx: number): boolean {
+    return selectedScrews.has(screwKey(plateIdx, screwIdx));
+  }
+
+  /** Resolved screw positions per plate (manual when set, else auto-placed). */
+  let resolvedScrews = $derived.by(() => {
+    if ($editorMode !== 'plate') return [];
+    return $layout.plates.map((_, pi) => resolvePlateScrewsU($layout, pi));
+  });
+
+  /** Inside-plate test for click-to-add. */
+  function pointInPolygon(px: number, py: number, ring: { x: number; y: number }[]): boolean {
+    let inside = false;
+    for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) {
+      const xi = ring[i].x, yi = ring[i].y;
+      const xj = ring[j].x, yj = ring[j].y;
+      const hit = yi > py !== yj > py && px < ((xj - xi) * (py - yi)) / (yj - yi) + xi;
+      if (hit) inside = !inside;
+    }
+    return inside;
+  }
+
+  function plateIndexAt(pos: { x: number; y: number }): number {
+    for (let pi = 0; pi < $layout.plates.length; pi++) {
+      if (pointInPolygon(pos.x, pos.y, $layout.plates[pi].vertices)) return pi;
+    }
+    return -1;
+  }
+
+  /** Materialize the plate's auto-placed screws into the manual array if it's
+   *  still in auto mode. Used before the first edit on each plate. */
+  function ensureManualScrews(plateIdx: number) {
+    const plate = $layout.plates[plateIdx];
+    if (!plate || plate.screws !== undefined) return;
+    const auto = resolvePlateScrewsU($layout, plateIdx);
+    setPlateScrews(plateIdx, auto);
+  }
+
+  // Clear vertex/screw selection when leaving plate mode; clear key selection when entering it
   $effect(() => {
     if ($editorMode === 'plate') selection.set(new Set());
-    if ($editorMode !== 'plate') selectedVertices = new Set();
+    if ($editorMode !== 'plate') {
+      selectedVertices = new Set();
+      selectedScrews = new Set();
+    }
   });
 
   let svgEl: SVGSVGElement;
@@ -406,6 +462,30 @@
     addPlateVertex(plateIdx, edgeIdx, roundPos(posU.x), roundPos(posU.y));
   }
 
+  // --- Plate screw drag start ---
+  function onScrewDragStart(plateIdx: number, screwIdx: number, e: PointerEvent) {
+    if (e.button !== 0) return;
+    e.stopPropagation();
+    ensureManualScrews(plateIdx);
+    screwDidDrag = false;
+    draggingScrew = { plateIdx, screwIdx };
+
+    const sk = screwKey(plateIdx, screwIdx);
+    screwClickContext = { sk, shiftKey: e.shiftKey };
+
+    if (e.shiftKey) {
+      const next = new Set(selectedScrews);
+      if (next.has(sk)) next.delete(sk);
+      else next.add(sk);
+      selectedScrews = next;
+    } else if (!selectedScrews.has(sk)) {
+      selectedScrews = new Set([sk]);
+    }
+
+    beginContinuous();
+    svgEl.setPointerCapture(e.pointerId);
+  }
+
   // --- Rotation handle start ---
   function onRotateStart(keyId: string, e: PointerEvent) {
     const key = $layout.keys.find((k) => k.id === keyId);
@@ -444,12 +524,30 @@
 
     // Left click on empty canvas
     if (e.button === 0 && !$spaceHeld) {
-      // Deselect vertices in plate mode (preserved when shift is held)
-      if ($editorMode === 'plate' && !e.shiftKey) selectedVertices = new Set();
-
       const screenPt = eventToSvgScreen(e);
       const canvasPt = screenToCanvas(screenPt, $pan, $zoom);
       const posU = canvasPxToU(canvasPt);
+
+      // Cmd/Ctrl-click inside a plate (plate mode) → add a screw
+      if ($editorMode === 'plate' && (e.metaKey || e.ctrlKey)) {
+        const pi = plateIndexAt(posU);
+        if (pi >= 0) {
+          const x = roundPos(posU.x);
+          const y = roundPos(posU.y);
+          if (isValidPlateScrewU($layout, pi, { x, y })) {
+            ensureManualScrews(pi);
+            addScrew(pi, x, y);
+          }
+          return;
+        }
+      }
+
+      // Deselect vertices/screws in plate mode (preserved when shift is held)
+      if ($editorMode === 'plate' && !e.shiftKey) {
+        selectedVertices = new Set();
+        selectedScrews = new Set();
+      }
+
       isMarquee = true;
       marqueeStartU = posU;
       marqueeEndU = posU;
@@ -479,6 +577,30 @@
         movePlateVertices(selectedVertices, dx, dy);
       } else {
         movePlateVertex(draggingVertex.plateIdx, draggingVertex.vertexIdx, x, y);
+      }
+      return;
+    }
+
+    // Plate screw drag
+    if (draggingScrew) {
+      screwDidDrag = true;
+      const screenPt = eventToSvgScreen(e);
+      const canvasPt = screenToCanvas(screenPt, $pan, $zoom);
+      const posU = canvasPxToU(canvasPt);
+      const snap = $gridSnap;
+      const x = snap > 0 && e.shiftKey ? snapToGrid(posU.x, snap) : roundPos(posU.x);
+      const y = snap > 0 && e.shiftKey ? snapToGrid(posU.y, snap) : roundPos(posU.y);
+
+      const anchor = $layout.plates[draggingScrew.plateIdx]?.screws?.[draggingScrew.screwIdx];
+      if (!anchor) return;
+      const dx = x - anchor.x;
+      const dy = y - anchor.y;
+      if (dx === 0 && dy === 0) return;
+
+      if (selectedScrews.size > 1) {
+        moveScrews(selectedScrews, dx, dy);
+      } else {
+        moveScrew(draggingScrew.plateIdx, draggingScrew.screwIdx, x, y);
       }
       return;
     }
@@ -639,6 +761,18 @@
       return;
     }
 
+    if (draggingScrew) {
+      if (screwDidDrag) {
+        endContinuous();
+      } else if (screwClickContext && !screwClickContext.shiftKey) {
+        selectedScrews = new Set([screwClickContext.sk]);
+      }
+      draggingScrew = null;
+      screwClickContext = null;
+      svgEl.releasePointerCapture(e.pointerId);
+      return;
+    }
+
     if (isMarquee) {
       isMarquee = false;
       svgEl.releasePointerCapture(e.pointerId);
@@ -653,6 +787,7 @@
         if (!e.shiftKey) {
           if ($editorMode === 'plate') {
             selectedVertices = new Set();
+            selectedScrews = new Set();
           } else {
             selection.set(new Set());
           }
@@ -660,20 +795,30 @@
         return;
       }
 
-      // In plate mode, marquee selects vertices (shift adds to existing)
+      // In plate mode, marquee selects vertices and screws (shift adds to existing)
       if ($editorMode === 'plate') {
         const right = left + w;
         const bottom = top + h;
-        const sel = e.shiftKey ? new Set(selectedVertices) : new Set<string>();
+        const vSel = e.shiftKey ? new Set(selectedVertices) : new Set<string>();
+        const sSel = e.shiftKey ? new Set(selectedScrews) : new Set<string>();
         for (let pi = 0; pi < $layout.plates.length; pi++) {
-          for (let vi = 0; vi < $layout.plates[pi].vertices.length; vi++) {
-            const v = $layout.plates[pi].vertices[vi];
+          const plate = $layout.plates[pi];
+          for (let vi = 0; vi < plate.vertices.length; vi++) {
+            const v = plate.vertices[vi];
             if (v.x >= left && v.x <= right && v.y >= top && v.y <= bottom) {
-              sel.add(vertexKey(pi, vi));
+              vSel.add(vertexKey(pi, vi));
+            }
+          }
+          const screws = resolvedScrews[pi] ?? [];
+          for (let si = 0; si < screws.length; si++) {
+            const s = screws[si];
+            if (s.x >= left && s.x <= right && s.y >= top && s.y <= bottom) {
+              sSel.add(screwKey(pi, si));
             }
           }
         }
-        selectedVertices = sel;
+        selectedVertices = vSel;
+        selectedScrews = sSel;
         return;
       }
 
@@ -761,8 +906,14 @@
       return;
     }
 
-    // Delete / Backspace → delete selected vertices (plate mode)
+    // Delete / Backspace → delete selected screws or vertices (plate mode)
     if ((e.code === 'Delete' || e.code === 'Backspace') && $editorMode === 'plate') {
+      if (selectedScrews.size > 0) {
+        e.preventDefault();
+        removeScrews(selectedScrews);
+        selectedScrews = new Set();
+        return;
+      }
       if (selectedVertices.size > 0) {
         e.preventDefault();
         removePlateVertices(selectedVertices);
@@ -1110,7 +1261,7 @@
       {#each $layout.plates as plate, pi}
         {@const verts = plate.vertices}
         {@const radius = $layout.plateCornerRadius}
-        {@const filleted = radius > 0 ? filletPolygon(verts, radius) : null}
+        {@const filleted = radius > 0 ? filletPolygon(verts, radius, undefined, MM_PER_U) : null}
         <!-- Filleted outline preview (when radius > 0) -->
         {#if filleted}
           <polygon
@@ -1155,26 +1306,70 @@
             onpointerdown={(e) => onVertexDragStart(pi, vi, e)}
           />
         {/each}
+        <!-- Screw handles -->
+        {#each (resolvedScrews[pi] ?? []) as s, si}
+          {@const valid = isValidPlateScrewU($layout, pi, s)}
+          <!-- svelte-ignore a11y_no_static_element_interactions -->
+          <circle
+            cx={s.x * SCALE} cy={s.y * SCALE}
+            r={6 / $zoom}
+            class="plate-screw"
+            class:plate-screw-selected={isScrewSelected(pi, si)}
+            class:plate-screw-invalid={!valid}
+            onpointerdown={(e) => onScrewDragStart(pi, si, e)}
+          />
+          <circle
+            cx={s.x * SCALE} cy={s.y * SCALE}
+            r={1.5 / $zoom}
+            fill="white"
+            pointer-events="none"
+          />
+        {/each}
       {/each}
     {/if}
 
-    {#each $layout.keys as key (key.id)}
-      {@const cell = $matrix[key.id]}
-      {@const focusIdx = cell ? ($schematicFocus === 'rows' ? cell.row : cell.col) : undefined}
-      <KeyShape
-        {key}
-        selected={$selection.has(key.id)}
-        linked={!!$layout.mirrorPairs[key.id]}
-        aligned={alignedKeyIds.has(key.id)}
-        schematic={$editorMode === 'schematic'}
-        interactive={$editorMode !== 'plate'}
-        matrixCell={cell}
-        focusCols={$schematicFocus === 'cols'}
-        groupColor={focusIdx !== undefined ? primaryColor(focusIdx) : undefined}
-        hasError={errorKeyIds.has(key.id)}
-        onDragStart={onKeyDragStart}
-      />
-    {/each}
+    {#if $editorMode !== 'plate' || $plateKeyDisplay !== 'hide'}
+      <g
+        opacity={$editorMode === 'plate' && $plateKeyDisplay === 'fade' ? 0.25 : 1}
+      >
+        {#each $layout.keys as key (key.id)}
+          {@const cell = $matrix[key.id]}
+          {@const focusIdx = cell ? ($schematicFocus === 'rows' ? cell.row : cell.col) : undefined}
+          <KeyShape
+            {key}
+            selected={$selection.has(key.id)}
+            linked={!!$layout.mirrorPairs[key.id]}
+            aligned={alignedKeyIds.has(key.id)}
+            schematic={$editorMode === 'schematic'}
+            interactive={$editorMode !== 'plate'}
+            matrixCell={cell}
+            focusCols={$schematicFocus === 'cols'}
+            groupColor={focusIdx !== undefined ? primaryColor(focusIdx) : undefined}
+            hasError={errorKeyIds.has(key.id)}
+            onDragStart={onKeyDragStart}
+          />
+        {/each}
+      </g>
+    {/if}
+
+    <!-- Switch cutouts (plate mode): drawn on top of keys so they're visible regardless of key opacity. -->
+    {#if $editorMode === 'plate'}
+      {#each $layout.keys as key (key.id)}
+        {@const kcx = (key.x + key.width / 2) * SCALE}
+        {@const kcy = (key.y + key.height / 2) * SCALE}
+        {@const half = (cutoutU / 2) * SCALE}
+        <rect
+          x={kcx - half}
+          y={kcy - half}
+          width={half * 2}
+          height={half * 2}
+          transform="rotate({key.rotation} {kcx} {kcy})"
+          class="switch-cutout"
+          stroke-width={1.5 / $zoom}
+          pointer-events="none"
+        />
+      {/each}
+    {/if}
     <!-- Rotation handle for selected keys (layout mode only) -->
     {#if $editorMode === 'layout'}
       {#each $layout.keys.filter((k) => $selection.has(k.id)) as key (key.id)}
@@ -1270,5 +1465,31 @@
 
   .plate-edge {
     cursor: copy;
+  }
+
+  .plate-screw {
+    fill: rgba(255, 200, 80, 0.85);
+    stroke: #b07000;
+    stroke-width: 1.5;
+    cursor: grab;
+  }
+
+  .plate-screw:hover {
+    fill: rgb(255, 220, 130);
+  }
+
+  .plate-screw-selected {
+    fill: #ffae00;
+    stroke: white;
+  }
+
+  .plate-screw-invalid {
+    fill: rgba(255, 80, 80, 0.85);
+    stroke: #b00000;
+  }
+
+  .switch-cutout {
+    fill: rgba(20, 24, 32, 0.55);
+    stroke: #ff6b35;
   }
 </style>

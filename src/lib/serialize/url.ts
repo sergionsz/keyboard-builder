@@ -2,8 +2,19 @@ import { deflateSync, inflateSync } from 'fflate';
 import {
   decompressFromEncodedURIComponent,
 } from 'lz-string';
-import type { Key, Layout } from '../../types';
+import type { Key, Layout, SwitchType } from '../../types';
 import { uuid } from '../uuid';
+
+const SWITCH_TYPE_BY_CODE: Record<number, SwitchType> = {
+  0: 'mx',
+  1: 'choc-v2',
+  2: 'mx-low-profile',
+};
+const CODE_BY_SWITCH_TYPE: Record<SwitchType, number> = {
+  'mx': 0,
+  'choc-v2': 1,
+  'mx-low-profile': 2,
+};
 
 // ── Binary format (v2) ─────────────────────────────────────────────
 //
@@ -69,21 +80,15 @@ function fromBase64url(s: string): Uint8Array {
   return out;
 }
 
-// ── Serialize (v4 binary) ───────────────────────────────────────────
+// ── Serialize (v6 binary) ───────────────────────────────────────────
 //
-// v4 extends v3:
-//   - Version byte = 4
-//   - Alignment-group count is always written (even when 0), unlike v3
-//     where the section was omitted when empty. Required for the trailing
-//     plate section to have a deterministic position.
-//   - After alignment groups: plate section
-//     2 bytes  plate count P (uint16)
-//     Per plate:
-//       2 bytes  vertex count V (uint16)
-//       Per vertex:
-//         2 bytes  x * 100 (int16)
-//         2 bytes  y * 100 (int16)
-//     2 bytes  plateCornerRadius * 100 (uint16)
+// v6 extends v5 with a per-plate manual-screws section appended after
+// the switchType byte. For each plate (in plate-list order):
+//   1 byte  flag (0 = auto-placed, 1 = manual list follows)
+//   if flag === 1:
+//     2 bytes  screw count S (uint16)
+//     S × (int16 x*100, int16 y*100)
+// Reading older versions leaves screws: undefined on every plate.
 
 export function serializeLayout(layout: Layout): string {
   const idToIndex = new Map<string, number>();
@@ -118,14 +123,18 @@ export function serializeLayout(layout: Layout): string {
     2 +
     (layout.plates ?? []).reduce((sum, p) => sum + 2 + p.vertices.length * 4, 0) +
     2;
+  const screwBytes = (layout.plates ?? []).reduce(
+    (sum, p) => sum + 1 + (p.screws ? 2 + p.screws.length * 4 : 0),
+    0,
+  );
   const buf = new ArrayBuffer(
-    4 + 256 + layout.keys.length * 30 + mirrorPairs.length * 4 + 10 + alignGroupBytes + matrixEntries.length * 4 + plateBytes + 4,
+    4 + 256 + layout.keys.length * 30 + mirrorPairs.length * 4 + 10 + alignGroupBytes + matrixEntries.length * 4 + plateBytes + 4 + 1 + screwBytes,
   );
   const view = new DataView(buf);
   let off = 0;
 
   // Version
-  view.setUint8(off++, 4);
+  view.setUint8(off++, 6);
 
   // Name
   const nameBytes = TEXT.encode(layout.name);
@@ -204,15 +213,42 @@ export function serializeLayout(layout: Layout): string {
   }
   view.setUint16(off, Math.round((layout.plateCornerRadius ?? 0) * 100), true); off += 2;
 
+  // Switch type (v5+)
+  view.setUint8(off++, CODE_BY_SWITCH_TYPE[layout.switchType ?? 'mx']);
+
+  // Manual screws per plate (v6+)
+  for (const plate of plates) {
+    if (plate.screws) {
+      view.setUint8(off++, 1);
+      view.setUint16(off, plate.screws.length, true); off += 2;
+      for (const s of plate.screws) {
+        view.setInt16(off, Math.round(s.x * 100), true); off += 2;
+        view.setInt16(off, Math.round(s.y * 100), true); off += 2;
+      }
+    } else {
+      view.setUint8(off++, 0);
+    }
+  }
+
   const raw = new Uint8Array(buf, 0, off);
   const compressed = deflateSync(raw, { level: 9 });
-  return '4' + toBase64url(compressed);
+  return '6' + toBase64url(compressed);
 }
 
 // ── Deserialize ─────────────────────────────────────────────────────
 
 export function deserializeLayout(hash: string): Layout | null {
   if (!hash) return null;
+
+  // v6 binary format (adds per-plate manual screws section)
+  if (hash.charAt(0) === '6') {
+    return deserializeV6(hash.slice(1));
+  }
+
+  // v5 binary format (adds trailing switchType byte)
+  if (hash.charAt(0) === '5') {
+    return deserializeV5(hash.slice(1));
+  }
 
   // v4 binary format
   if (hash.charAt(0) === '4') {
@@ -299,7 +335,7 @@ function deserializeV2(b64: string): Layout | null {
     minGap = view.getUint16(off, true) / 100; off += 2;
   }
 
-  return { name, keys, mirrorPairs, mirrorAxisX, minGap, matrixOverrides: {}, alignmentGroups: [], plates: [], plateCornerRadius: 0 };
+  return { name, keys, mirrorPairs, mirrorAxisX, minGap, matrixOverrides: {}, alignmentGroups: [], plates: [], plateCornerRadius: 0, switchType: 'mx' };
 }
 
 function deserializeV3(b64: string): Layout | null {
@@ -399,7 +435,7 @@ function deserializeV3(b64: string): Layout | null {
     }
   }
 
-  return { name, keys, mirrorPairs, mirrorAxisX, minGap, matrixOverrides, alignmentGroups, plates: [], plateCornerRadius: 0 };
+  return { name, keys, mirrorPairs, mirrorAxisX, minGap, matrixOverrides, alignmentGroups, plates: [], plateCornerRadius: 0, switchType: 'mx' };
 }
 
 function deserializeV4(b64: string): Layout | null {
@@ -511,7 +547,238 @@ function deserializeV4(b64: string): Layout | null {
 
   const plateCornerRadius = view.getUint16(off, true) / 100; off += 2;
 
-  return { name, keys, mirrorPairs, mirrorAxisX, minGap, matrixOverrides, alignmentGroups, plates, plateCornerRadius };
+  return { name, keys, mirrorPairs, mirrorAxisX, minGap, matrixOverrides, alignmentGroups, plates, plateCornerRadius, switchType: 'mx' };
+}
+
+function deserializeV5(b64: string): Layout | null {
+  let raw: Uint8Array;
+  try {
+    raw = inflateSync(fromBase64url(b64));
+  } catch {
+    return null;
+  }
+
+  const view = new DataView(raw.buffer, raw.byteOffset, raw.byteLength);
+  let off = 0;
+
+  const version = view.getUint8(off++);
+  if (version !== 5) return null;
+
+  const nameLen = view.getUint8(off++);
+  const name = DECODE.decode(raw.subarray(off, off + nameLen));
+  off += nameLen;
+
+  const keyCount = view.getUint16(off, true); off += 2;
+  const keys: Key[] = [];
+
+  for (let i = 0; i < keyCount; i++) {
+    const x = view.getInt16(off, true) / 100; off += 2;
+    const y = view.getInt16(off, true) / 100; off += 2;
+    const flags = view.getUint8(off++);
+
+    let width = 1;
+    let height = 1;
+    let rotation = 0;
+
+    if (flags & 1) { width = view.getUint16(off, true) / 100; off += 2; }
+    if (flags & 2) { height = view.getUint16(off, true) / 100; off += 2; }
+    if (flags & 4) { rotation = view.getInt16(off, true) / 10; off += 2; }
+
+    const labelLen = view.getUint8(off++);
+    const label = DECODE.decode(raw.subarray(off, off + labelLen));
+    off += labelLen;
+
+    keys.push({ id: uuid(), x, y, width, height, rotation, label });
+  }
+
+  const pairCount = view.getUint16(off, true); off += 2;
+  const mirrorPairs: Record<string, string> = {};
+  for (let i = 0; i < pairCount; i++) {
+    const iA = view.getUint16(off, true); off += 2;
+    const iB = view.getUint16(off, true); off += 2;
+    if (iA < keys.length && iB < keys.length) {
+      mirrorPairs[keys[iA].id] = keys[iB].id;
+      mirrorPairs[keys[iB].id] = keys[iA].id;
+    }
+  }
+
+  let mirrorAxisX = 0;
+  if (pairCount > 0) {
+    mirrorAxisX = view.getFloat32(off, true); off += 4;
+  }
+
+  const minGap = view.getUint16(off, true) / 100; off += 2;
+
+  const matrixOverrides: Record<string, { row: number; col: number }> = {};
+  const overrideCount = view.getUint16(off, true); off += 2;
+  for (let i = 0; i < overrideCount; i++) {
+    const idx = view.getUint16(off, true); off += 2;
+    const row = view.getUint8(off++);
+    const col = view.getUint8(off++);
+    if (idx < keys.length) {
+      matrixOverrides[keys[idx].id] = { row, col };
+    }
+  }
+
+  const alignmentGroups: { id: string; axis: 'x' | 'y'; value: number; keyIds: string[] }[] = [];
+  const groupCount = view.getUint16(off, true); off += 2;
+  for (let i = 0; i < groupCount; i++) {
+    const axisVal = view.getUint8(off++);
+    const axis: 'x' | 'y' = axisVal === 0 ? 'x' : 'y';
+    const value = view.getInt16(off, true) / 100; off += 2;
+    const memberCount = view.getUint16(off, true); off += 2;
+    const keyIds: string[] = [];
+    for (let j = 0; j < memberCount; j++) {
+      const idx = view.getUint16(off, true); off += 2;
+      if (idx < keys.length) keyIds.push(keys[idx].id);
+    }
+    if (keyIds.length >= 2) {
+      alignmentGroups.push({ id: uuid(), axis, value, keyIds });
+    }
+  }
+
+  const plates: { vertices: { x: number; y: number }[] }[] = [];
+  const plateCount = view.getUint16(off, true); off += 2;
+  for (let i = 0; i < plateCount; i++) {
+    const vertCount = view.getUint16(off, true); off += 2;
+    const vertices: { x: number; y: number }[] = [];
+    for (let j = 0; j < vertCount; j++) {
+      const x = view.getInt16(off, true) / 100; off += 2;
+      const y = view.getInt16(off, true) / 100; off += 2;
+      vertices.push({ x, y });
+    }
+    plates.push({ vertices });
+  }
+
+  const plateCornerRadius = view.getUint16(off, true) / 100; off += 2;
+
+  const switchTypeCode = view.getUint8(off++);
+  const switchType: SwitchType = SWITCH_TYPE_BY_CODE[switchTypeCode] ?? 'mx';
+
+  return { name, keys, mirrorPairs, mirrorAxisX, minGap, matrixOverrides, alignmentGroups, plates, plateCornerRadius, switchType };
+}
+
+function deserializeV6(b64: string): Layout | null {
+  let raw: Uint8Array;
+  try {
+    raw = inflateSync(fromBase64url(b64));
+  } catch {
+    return null;
+  }
+
+  const view = new DataView(raw.buffer, raw.byteOffset, raw.byteLength);
+  let off = 0;
+
+  const version = view.getUint8(off++);
+  if (version !== 6) return null;
+
+  const nameLen = view.getUint8(off++);
+  const name = DECODE.decode(raw.subarray(off, off + nameLen));
+  off += nameLen;
+
+  const keyCount = view.getUint16(off, true); off += 2;
+  const keys: Key[] = [];
+
+  for (let i = 0; i < keyCount; i++) {
+    const x = view.getInt16(off, true) / 100; off += 2;
+    const y = view.getInt16(off, true) / 100; off += 2;
+    const flags = view.getUint8(off++);
+
+    let width = 1;
+    let height = 1;
+    let rotation = 0;
+
+    if (flags & 1) { width = view.getUint16(off, true) / 100; off += 2; }
+    if (flags & 2) { height = view.getUint16(off, true) / 100; off += 2; }
+    if (flags & 4) { rotation = view.getInt16(off, true) / 10; off += 2; }
+
+    const labelLen = view.getUint8(off++);
+    const label = DECODE.decode(raw.subarray(off, off + labelLen));
+    off += labelLen;
+
+    keys.push({ id: uuid(), x, y, width, height, rotation, label });
+  }
+
+  const pairCount = view.getUint16(off, true); off += 2;
+  const mirrorPairs: Record<string, string> = {};
+  for (let i = 0; i < pairCount; i++) {
+    const iA = view.getUint16(off, true); off += 2;
+    const iB = view.getUint16(off, true); off += 2;
+    if (iA < keys.length && iB < keys.length) {
+      mirrorPairs[keys[iA].id] = keys[iB].id;
+      mirrorPairs[keys[iB].id] = keys[iA].id;
+    }
+  }
+
+  let mirrorAxisX = 0;
+  if (pairCount > 0) {
+    mirrorAxisX = view.getFloat32(off, true); off += 4;
+  }
+
+  const minGap = view.getUint16(off, true) / 100; off += 2;
+
+  const matrixOverrides: Record<string, { row: number; col: number }> = {};
+  const overrideCount = view.getUint16(off, true); off += 2;
+  for (let i = 0; i < overrideCount; i++) {
+    const idx = view.getUint16(off, true); off += 2;
+    const row = view.getUint8(off++);
+    const col = view.getUint8(off++);
+    if (idx < keys.length) {
+      matrixOverrides[keys[idx].id] = { row, col };
+    }
+  }
+
+  const alignmentGroups: { id: string; axis: 'x' | 'y'; value: number; keyIds: string[] }[] = [];
+  const groupCount = view.getUint16(off, true); off += 2;
+  for (let i = 0; i < groupCount; i++) {
+    const axisVal = view.getUint8(off++);
+    const axis: 'x' | 'y' = axisVal === 0 ? 'x' : 'y';
+    const value = view.getInt16(off, true) / 100; off += 2;
+    const memberCount = view.getUint16(off, true); off += 2;
+    const keyIds: string[] = [];
+    for (let j = 0; j < memberCount; j++) {
+      const idx = view.getUint16(off, true); off += 2;
+      if (idx < keys.length) keyIds.push(keys[idx].id);
+    }
+    if (keyIds.length >= 2) {
+      alignmentGroups.push({ id: uuid(), axis, value, keyIds });
+    }
+  }
+
+  const plates: { vertices: { x: number; y: number }[]; screws?: { x: number; y: number }[] }[] = [];
+  const plateCount = view.getUint16(off, true); off += 2;
+  for (let i = 0; i < plateCount; i++) {
+    const vertCount = view.getUint16(off, true); off += 2;
+    const vertices: { x: number; y: number }[] = [];
+    for (let j = 0; j < vertCount; j++) {
+      const x = view.getInt16(off, true) / 100; off += 2;
+      const y = view.getInt16(off, true) / 100; off += 2;
+      vertices.push({ x, y });
+    }
+    plates.push({ vertices });
+  }
+
+  const plateCornerRadius = view.getUint16(off, true) / 100; off += 2;
+
+  const switchTypeCode = view.getUint8(off++);
+  const switchType: SwitchType = SWITCH_TYPE_BY_CODE[switchTypeCode] ?? 'mx';
+
+  // Per-plate manual screws (v6+)
+  for (let i = 0; i < plates.length; i++) {
+    const flag = view.getUint8(off++);
+    if (flag === 1) {
+      const screwCount = view.getUint16(off, true); off += 2;
+      const screws: { x: number; y: number }[] = [];
+      for (let j = 0; j < screwCount; j++) {
+        const x = view.getInt16(off, true) / 100; off += 2;
+        const y = view.getInt16(off, true) / 100; off += 2;
+        screws.push({ x, y });
+      }
+      plates[i].screws = screws;
+    }
+  }
+
+  return { name, keys, mirrorPairs, mirrorAxisX, minGap, matrixOverrides, alignmentGroups, plates, plateCornerRadius, switchType };
 }
 
 // ── v1 fallback (lz-string JSON) ────────────────────────────────────
@@ -579,5 +846,6 @@ function deserializeV1(hash: string): Layout | null {
     matrixOverrides: {},
     alignmentGroups: [],
     plates: [], plateCornerRadius: 0,
+    switchType: 'mx',
   };
 }

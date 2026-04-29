@@ -3,15 +3,16 @@ import polygonClipping from 'polygon-clipping';
 import type { Pair } from 'polygon-clipping';
 import type { Layout, Key } from '../types';
 import { filletPolygon } from './plate';
+import { getSwitchGeometry, type SwitchGeometry } from './switchGeometry';
 
-const MM_PER_U = 19.05;
+const MX = getSwitchGeometry(undefined);
 
-/** Cherry MX switch plate cutout (14mm x 14mm). */
-export const SWITCH_CUTOUT_SIZE = 14;
+/** MX switch plate cutout side length, mm. Use {@link SwitchGeometry.cutoutSize} for the active switch type. */
+export const SWITCH_CUTOUT_SIZE = MX.cutoutSize;
 /** M2 screw clearance hole diameter. */
 export const SCREW_HOLE_DIAMETER = 2.2;
-/** Plate thickness in mm (standard 1.5mm switch plate). */
-export const PLATE_THICKNESS = 1.5;
+/** Default plate thickness in mm (MX). Use {@link SwitchGeometry.plateThickness} for the active switch type. */
+export const PLATE_THICKNESS = MX.plateThickness;
 /** Gap between top and bottom plate when laid out side-by-side for printing. */
 export const PRINT_GAP = 5;
 /** Minimum distance from any plate edge to a screw hole center. */
@@ -36,10 +37,10 @@ function rotateAround(px: number, py: number, cx: number, cy: number, deg: numbe
 }
 
 /** Square hole ring for a single switch, in mm (canvas coords). */
-export function switchCutoutRing(key: Key): P2[] {
-  const cx = (key.x + key.width / 2) * MM_PER_U;
-  const cy = (key.y + key.height / 2) * MM_PER_U;
-  const hs = SWITCH_CUTOUT_SIZE / 2;
+export function switchCutoutRing(key: Key, geometry: SwitchGeometry = MX): P2[] {
+  const cx = (key.x + key.width / 2) * geometry.mmPerU;
+  const cy = (key.y + key.height / 2) * geometry.mmPerU;
+  const hs = geometry.cutoutSize / 2;
   const corners: P2[] = [
     [cx - hs, cy - hs],
     [cx + hs, cy - hs],
@@ -159,6 +160,72 @@ function findCenterScrew(
     }
   }
   return null;
+}
+
+/**
+ * Resolve the screw positions to use for a given plate, in U coordinates.
+ * Returns the manual list when defined, otherwise computes auto-placement
+ * from the plate outline + switch cutouts.
+ */
+export function resolvePlateScrewsU(
+  layout: Layout,
+  plateIdx: number,
+): { x: number; y: number }[] {
+  const plate = layout.plates[plateIdx];
+  if (!plate || plate.vertices.length < 3) return [];
+  if (plate.screws) return plate.screws.map((s) => ({ ...s }));
+
+  const geometry = getSwitchGeometry(layout.switchType);
+  const mmPerU = geometry.mmPerU;
+  const outlineU =
+    layout.plateCornerRadius > 0
+      ? filletPolygon(plate.vertices, layout.plateCornerRadius, undefined, mmPerU)
+      : plate.vertices;
+  const outerMm: P2[] = outlineU.map((v) => [v.x * mmPerU, v.y * mmPerU]);
+
+  const switchHoles: P2[][] = [];
+  for (const key of layout.keys) {
+    const kcx = (key.x + key.width / 2) * mmPerU;
+    const kcy = (key.y + key.height / 2) * mmPerU;
+    if (pointInRing(kcx, kcy, outerMm)) {
+      switchHoles.push(switchCutoutRing(key, geometry));
+    }
+  }
+
+  return screwHoleCenters(outerMm, switchHoles).map(([x, y]) => ({
+    x: x / mmPerU,
+    y: y / mmPerU,
+  }));
+}
+
+/**
+ * Test whether a candidate screw position (U coords) is valid on the given
+ * plate: inside the plate outline with edge clearance, and clear of every
+ * switch cutout. The Canvas uses this to clamp drags and refuse invalid adds.
+ */
+export function isValidPlateScrewU(
+  layout: Layout,
+  plateIdx: number,
+  pos: { x: number; y: number },
+): boolean {
+  const plate = layout.plates[plateIdx];
+  if (!plate || plate.vertices.length < 3) return false;
+  const geometry = getSwitchGeometry(layout.switchType);
+  const mmPerU = geometry.mmPerU;
+  const outlineU =
+    layout.plateCornerRadius > 0
+      ? filletPolygon(plate.vertices, layout.plateCornerRadius, undefined, mmPerU)
+      : plate.vertices;
+  const outerMm: P2[] = outlineU.map((v) => [v.x * mmPerU, v.y * mmPerU]);
+  const switchHoles: P2[][] = [];
+  for (const key of layout.keys) {
+    const kcx = (key.x + key.width / 2) * mmPerU;
+    const kcy = (key.y + key.height / 2) * mmPerU;
+    if (pointInRing(kcx, kcy, outerMm)) {
+      switchHoles.push(switchCutoutRing(key, geometry));
+    }
+  }
+  return isValidScrewPos(pos.x * mmPerU, pos.y * mmPerU, outerMm, switchHoles);
 }
 
 export function screwHoleCenters(outerMm: P2[], switchCutouts: P2[][] = []): P2[] {
@@ -349,12 +416,15 @@ function stlAscii(triangles: Tri[], name: string): string {
 
 /**
  * Export the current plate outlines as an ASCII STL. Both plates lie flat on
- * the same Z plane (z=0 to z=PLATE_THICKNESS) so they can be printed together
- * in a single job: the top "switch plate" (with 14mm switch cutouts and M2
- * screw holes) at the original layout position, and a copy of the same outline
- * with only the screw holes (the bottom plate) translated below it in Y.
+ * the same Z plane (z=0 to z=plateThickness) so they can be printed together
+ * in a single job: the top "switch plate" (with switch cutouts and M2 screw
+ * holes) at the original layout position, and a copy of the same outline with
+ * only the screw holes (the bottom plate) translated below it in Y. Cutout
+ * size, plate pitch, and plate thickness come from the layout's switch type.
  */
 export function exportPlateStl(layout: Layout): string {
+  const geometry = getSwitchGeometry(layout.switchType);
+  const mmPerU = geometry.mmPerU;
   const triangles: Tri[] = [];
 
   // Pre-compute outlines, holes, and overall bounding box of all top plates so
@@ -372,20 +442,22 @@ export function exportPlateStl(layout: Layout): string {
     if (plate.vertices.length < 3) continue;
     const outlineU =
       layout.plateCornerRadius > 0
-        ? filletPolygon(plate.vertices, layout.plateCornerRadius)
+        ? filletPolygon(plate.vertices, layout.plateCornerRadius, undefined, mmPerU)
         : plate.vertices;
-    const outerMm: P2[] = outlineU.map((v) => [v.x * MM_PER_U, v.y * MM_PER_U]);
+    const outerMm: P2[] = outlineU.map((v) => [v.x * mmPerU, v.y * mmPerU]);
 
     const switchHoles: P2[][] = [];
     for (const key of layout.keys) {
-      const kcx = (key.x + key.width / 2) * MM_PER_U;
-      const kcy = (key.y + key.height / 2) * MM_PER_U;
+      const kcx = (key.x + key.width / 2) * mmPerU;
+      const kcy = (key.y + key.height / 2) * mmPerU;
       if (pointInRing(kcx, kcy, outerMm)) {
-        switchHoles.push(switchCutoutRing(key));
+        switchHoles.push(switchCutoutRing(key, geometry));
       }
     }
 
-    const screwCenters = screwHoleCenters(outerMm, switchHoles);
+    const screwCenters: P2[] = plate.screws
+      ? plate.screws.map((s) => [s.x * mmPerU, s.y * mmPerU])
+      : screwHoleCenters(outerMm, switchHoles);
     const screwRings: P2[][] = screwCenters.map(([cx, cy]) =>
       circleRing(cx, cy, SCREW_HOLE_DIAMETER / 2),
     );
@@ -401,7 +473,7 @@ export function exportPlateStl(layout: Layout): string {
   // Y offset that places the bottom plates below all top plates with a gap
   const dy = prepared.length > 0 ? bboxMaxY - bboxMinY + PRINT_GAP : 0;
   const zBot = 0;
-  const zTop = PLATE_THICKNESS;
+  const zTop = geometry.plateThickness;
 
   for (const p of prepared) {
     // Top plate: switch cutouts + screw holes, original position

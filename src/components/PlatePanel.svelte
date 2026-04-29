@@ -1,8 +1,12 @@
 <script lang="ts">
-  import { layout, setPlates, pushUndoExported, updateLayoutField } from '../stores/layout';
+  import { layout, setPlates, pushUndoExported, updateLayoutField, resetScrewsToAuto } from '../stores/layout';
+  import { plateKeyDisplay, type PlateKeyDisplay } from '../stores/editor';
   import { generatePlateOutlines, simplifyRing } from '../lib/plate';
+  import { SWITCH_TYPE_LABELS, type SwitchType } from '../lib/switchGeometry';
 
   let cornerRadius = $derived($layout.plateCornerRadius);
+  let currentSwitchType = $derived($layout.switchType ?? 'mx');
+  let hasManualScrews = $derived($layout.plates.some((p) => p.screws !== undefined));
 
   function onRadiusInput(e: Event) {
     const val = parseFloat((e.currentTarget as HTMLInputElement).value);
@@ -10,9 +14,15 @@
     updateLayoutField('plateCornerRadius', isNaN(val) || val < 0 ? 0 : val);
   }
 
+  function onSwitchTypeChange(e: Event) {
+    const val = (e.currentTarget as HTMLSelectElement).value as SwitchType;
+    pushUndoExported();
+    updateLayoutField('switchType', val);
+  }
+
   function regenerate() {
     if ($layout.keys.length === 0) return;
-    const result = generatePlateOutlines($layout.keys);
+    const result = generatePlateOutlines($layout.keys, undefined, $layout.switchType);
     setPlates(result.plates.map((verts) => ({ vertices: verts })));
   }
 
@@ -74,6 +84,15 @@
   </div>
 
   <div class="field">
+    <label for="switch-type">Switch Type</label>
+    <select id="switch-type" value={currentSwitchType} onchange={onSwitchTypeChange}>
+      {#each Object.entries(SWITCH_TYPE_LABELS) as [value, label]}
+        <option {value}>{label}</option>
+      {/each}
+    </select>
+  </div>
+
+  <div class="field">
     <label for="plate-radius">Corner Radius (mm)</label>
     <input
       id="plate-radius"
@@ -92,6 +111,30 @@
   <button class="action-btn" onclick={simplify} disabled={plateCount === 0}>
     Simplify
   </button>
+
+  <div class="field">
+    <label>Keys</label>
+    <div class="segmented" role="radiogroup" aria-label="Plate-mode key display">
+      {#each ['show', 'fade', 'hide'] as const as opt}
+        <button
+          type="button"
+          role="radio"
+          aria-checked={$plateKeyDisplay === opt}
+          class:active={$plateKeyDisplay === opt}
+          onclick={() => plateKeyDisplay.set(opt as PlateKeyDisplay)}
+        >{opt[0].toUpperCase() + opt.slice(1)}</button>
+      {/each}
+    </div>
+  </div>
+
+  <div class="screw-section">
+    <div class="screw-help">
+      Cmd/Ctrl-click inside a plate to add a screw. Drag to move, Delete to remove.
+    </div>
+    <button class="action-btn" onclick={resetScrewsToAuto} disabled={!hasManualScrews}>
+      Reset Screws to Auto
+    </button>
+  </div>
 </aside>
 
 <style>
@@ -133,7 +176,8 @@
     letter-spacing: 0.5px;
   }
 
-  input {
+  input,
+  select {
     background: #2a2a2a;
     border: 1px solid #444;
     border-radius: 4px;
@@ -145,7 +189,8 @@
     box-sizing: border-box;
   }
 
-  input:focus {
+  input:focus,
+  select:focus {
     outline: none;
     border-color: #4a9eff;
   }
@@ -171,5 +216,52 @@
   .action-btn:hover:not(:disabled) {
     background: #444;
     color: #fff;
+  }
+
+  .screw-section {
+    margin-top: 16px;
+    padding-top: 12px;
+    border-top: 1px solid #333;
+  }
+
+  .screw-help {
+    font-size: 11px;
+    color: #888;
+    line-height: 1.4;
+    margin-bottom: 8px;
+  }
+
+  .segmented {
+    display: flex;
+    gap: 0;
+    border: 1px solid #444;
+    border-radius: 4px;
+    overflow: hidden;
+  }
+
+  .segmented button {
+    flex: 1;
+    background: #2a2a2a;
+    color: #aaa;
+    border: none;
+    border-right: 1px solid #444;
+    padding: 5px 0;
+    font-size: 12px;
+    font-family: inherit;
+    cursor: pointer;
+  }
+
+  .segmented button:last-child {
+    border-right: none;
+  }
+
+  .segmented button:hover:not(.active) {
+    background: #333;
+    color: #ddd;
+  }
+
+  .segmented button.active {
+    background: #4a9eff;
+    color: white;
   }
 </style>

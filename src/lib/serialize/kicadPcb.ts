@@ -3,8 +3,8 @@ import type { MatrixMap } from '../matrix';
 import { PRO_MICRO_PINS, assignPinsToMatrix, applyPinOverrides } from './proMicro';
 import { filletPolygon } from '../plate';
 import { screwHoleCenters, switchCutoutRing, SCREW_HOLE_DIAMETER } from '../exportStl';
+import { getSwitchGeometry, type SwitchGeometry } from '../switchGeometry';
 
-const U_MM = 19.05; // 1U in mm
 const BOARD_MARGIN = 9; // mm margin around keys for board outline
 
 // Simple incrementing UUID for KiCad
@@ -19,25 +19,11 @@ function sanitize(s: string): string {
   return s.replace(/\\/g, '\\\\').replace(/"/g, '\\"').replace(/\n/g, ' ').replace(/\r/g, '');
 }
 
-// --- Cherry MX footprint geometry (mm, relative to switch center) ---
-const MX_PIN1 = { x: -3.81, y: -2.54 }; // connects to ROW
-const MX_PIN2 = { x: 2.54, y: -5.08 };  // connects to diode
-const MX_PIN_DRILL = 1.5;
-const MX_PIN_PAD = 2.5;
-const MX_CENTER_DRILL = 4.0;
-const MX_MOUNT_L = { x: -5.08, y: 0 };
-const MX_MOUNT_R = { x: 5.08, y: 0 };
-const MX_MOUNT_DRILL = 1.7;
-
 // --- SOD-123 diode footprint (mm, relative to diode center) ---
 const D_PAD_K = { x: -1.35, y: 0 }; // cathode, connects to COL
 const D_PAD_A = { x: 1.35, y: 0 };  // anode, connects to switch pin 2
 const D_PAD_W = 0.6;
 const D_PAD_H = 0.7;
-
-// Diode placement offset from switch center (mm)
-const D_OFFSET_X = 0;
-const D_OFFSET_Y = 5.08;
 
 // --- Pro Micro footprint geometry ---
 const PM_ROW_SPACING = 7.62;  // half of 15.24mm row-to-row (600 mil)
@@ -132,58 +118,69 @@ interface PlacedKey {
   bridgeNet: NetInfo;
 }
 
-function emitSwitchFootprint(pk: PlacedKey): string {
+function emitSwitchFootprint(pk: PlacedKey, geometry: SwitchGeometry): string {
   const { xMm, yMm, rotation, index, key, rowNet, bridgeNet } = pk;
   const label = sanitize(key.label) || `R${pk.row}C${pk.col}`;
   const atRot = rotation !== 0 ? ` ${rotation}` : '';
-  return `  (footprint "keyboard-builder:SW_Cherry_MX" (layer "F.Cu") (at ${xMm} ${yMm}${atRot})
+  const fp = geometry.footprint;
+  const half = geometry.cutoutSize / 2;
+  const courtyard = half + 0.8;
+
+  const extras: string[] = [];
+  if (fp.centerDrill > 0) {
+    extras.push(`    (pad "" np_thru_hole circle (at 0 0) (size ${fp.centerDrill} ${fp.centerDrill}) (drill ${fp.centerDrill})
+      (layers "*.Cu" "*.Mask")
+      (uuid "${uid()}"))`);
+  }
+  if (fp.mountL && fp.mountR) {
+    extras.push(`    (pad "" np_thru_hole circle (at ${fp.mountL.x} ${fp.mountL.y}) (size ${fp.mountDrill} ${fp.mountDrill}) (drill ${fp.mountDrill})
+      (layers "*.Cu" "*.Mask")
+      (uuid "${uid()}"))`);
+    extras.push(`    (pad "" np_thru_hole circle (at ${fp.mountR.x} ${fp.mountR.y}) (size ${fp.mountDrill} ${fp.mountDrill}) (drill ${fp.mountDrill})
+      (layers "*.Cu" "*.Mask")
+      (uuid "${uid()}"))`);
+  }
+
+  return `  (footprint "keyboard-builder:${fp.name}" (layer "F.Cu") (at ${xMm} ${yMm}${atRot})
     (uuid "${uid()}")
-    (property "Reference" "SW${index}" (at 0 -8 0) (layer "F.SilkS")
+    (property "Reference" "SW${index}" (at 0 ${-half - 1} 0) (layer "F.SilkS")
       (effects (font (size 1 1) (thickness 0.15))))
-    (property "Value" "${label}" (at 0 8 0) (layer "F.Fab")
+    (property "Value" "${label}" (at 0 ${half + 1} 0) (layer "F.Fab")
       (effects (font (size 1 1) (thickness 0.15))))
-    (fp_rect (start -7 -7) (end 7 7)
+    (fp_rect (start ${-half} ${-half}) (end ${half} ${half})
       (stroke (width 0.12) (type solid)) (fill none) (layer "F.SilkS")
       (uuid "${uid()}"))
-    (fp_rect (start -7.8 -7.8) (end 7.8 7.8)
+    (fp_rect (start ${-courtyard} ${-courtyard}) (end ${courtyard} ${courtyard})
       (stroke (width 0.05) (type solid)) (fill none) (layer "F.CrtYd")
       (uuid "${uid()}"))
-    (fp_line (start -7 -7) (end 7 -7)
+    (fp_line (start ${-half} ${-half}) (end ${half} ${-half})
       (stroke (width 0.1) (type solid)) (layer "F.Fab")
       (uuid "${uid()}"))
-    (fp_line (start 7 -7) (end 7 7)
+    (fp_line (start ${half} ${-half}) (end ${half} ${half})
       (stroke (width 0.1) (type solid)) (layer "F.Fab")
       (uuid "${uid()}"))
-    (fp_line (start 7 7) (end -7 7)
+    (fp_line (start ${half} ${half}) (end ${-half} ${half})
       (stroke (width 0.1) (type solid)) (layer "F.Fab")
       (uuid "${uid()}"))
-    (fp_line (start -7 7) (end -7 -7)
+    (fp_line (start ${-half} ${half}) (end ${-half} ${-half})
       (stroke (width 0.1) (type solid)) (layer "F.Fab")
       (uuid "${uid()}"))
-    (pad "1" thru_hole circle (at ${MX_PIN1.x} ${MX_PIN1.y}) (size ${MX_PIN_PAD} ${MX_PIN_PAD}) (drill ${MX_PIN_DRILL})
+    (pad "1" thru_hole circle (at ${fp.pin1.x} ${fp.pin1.y}) (size ${fp.pinPad} ${fp.pinPad}) (drill ${fp.pinDrill})
       (layers "*.Cu" "*.Mask")
       (net ${rowNet.id} "${rowNet.name}")
       (uuid "${uid()}"))
-    (pad "2" thru_hole circle (at ${MX_PIN2.x} ${MX_PIN2.y}) (size ${MX_PIN_PAD} ${MX_PIN_PAD}) (drill ${MX_PIN_DRILL})
+    (pad "2" thru_hole circle (at ${fp.pin2.x} ${fp.pin2.y}) (size ${fp.pinPad} ${fp.pinPad}) (drill ${fp.pinDrill})
       (layers "*.Cu" "*.Mask")
       (net ${bridgeNet.id} "${bridgeNet.name}")
       (uuid "${uid()}"))
-    (pad "" np_thru_hole circle (at 0 0) (size ${MX_CENTER_DRILL} ${MX_CENTER_DRILL}) (drill ${MX_CENTER_DRILL})
-      (layers "*.Cu" "*.Mask")
-      (uuid "${uid()}"))
-    (pad "" np_thru_hole circle (at ${MX_MOUNT_L.x} ${MX_MOUNT_L.y}) (size ${MX_MOUNT_DRILL} ${MX_MOUNT_DRILL}) (drill ${MX_MOUNT_DRILL})
-      (layers "*.Cu" "*.Mask")
-      (uuid "${uid()}"))
-    (pad "" np_thru_hole circle (at ${MX_MOUNT_R.x} ${MX_MOUNT_R.y}) (size ${MX_MOUNT_DRILL} ${MX_MOUNT_DRILL}) (drill ${MX_MOUNT_DRILL})
-      (layers "*.Cu" "*.Mask")
-      (uuid "${uid()}"))
+${extras.join('\n')}
   )`;
 }
 
-function emitDiodeFootprint(pk: PlacedKey): string {
+function emitDiodeFootprint(pk: PlacedKey, geometry: SwitchGeometry): string {
   const { xMm, yMm, rotation, index, colNet, bridgeNet } = pk;
-  const dX = xMm + D_OFFSET_X;
-  const dY = yMm + D_OFFSET_Y;
+  const dX = xMm + geometry.footprint.diodeOffset.x;
+  const dY = yMm + geometry.footprint.diodeOffset.y;
   const atRot = rotation !== 0 ? ` ${rotation}` : '';
   return `  (footprint "keyboard-builder:D_SOD-123" (layer "B.Cu") (at ${dX} ${dY}${atRot})
     (uuid "${uid()}")
@@ -269,14 +266,15 @@ ${padLines.join('\n')}
 
 function computeBoardOutline(
   keys: PlacedKey[],
+  mmPerU: number,
   pmPos?: { x: number; y: number },
 ): { x: number; y: number }[] {
   if (keys.length === 0 && !pmPos) return [];
 
   const points: { x: number; y: number }[] = [];
   for (const pk of keys) {
-    const hw = (pk.key.width * U_MM) / 2 + BOARD_MARGIN;
-    const hh = (pk.key.height * U_MM) / 2 + BOARD_MARGIN;
+    const hw = (pk.key.width * mmPerU) / 2 + BOARD_MARGIN;
+    const hh = (pk.key.height * mmPerU) / 2 + BOARD_MARGIN;
     const rad = (pk.rotation * Math.PI) / 180;
     const cos = Math.cos(rad);
     const sin = Math.sin(rad);
@@ -339,10 +337,10 @@ function emitBoardOutline(hull: { x: number; y: number }[]): string {
   return lines.join('\n');
 }
 
-function plateOutlineMm(plate: PlateOutline, cornerRadius: number): { x: number; y: number }[] {
+function plateOutlineMm(plate: PlateOutline, cornerRadius: number, mmPerU: number): { x: number; y: number }[] {
   if (plate.vertices.length < 3) return [];
-  const outline = cornerRadius > 0 ? filletPolygon(plate.vertices, cornerRadius) : plate.vertices;
-  return outline.map((v) => ({ x: v.x * U_MM, y: v.y * U_MM }));
+  const outline = cornerRadius > 0 ? filletPolygon(plate.vertices, cornerRadius, undefined, mmPerU) : plate.vertices;
+  return outline.map((v) => ({ x: v.x * mmPerU, y: v.y * mmPerU }));
 }
 
 function emitMountingHole(x: number, y: number): string {
@@ -366,13 +364,15 @@ function r(n: number): number {
 /**
  * Export a keyboard layout + matrix as a KiCad PCB (.kicad_pcb).
  *
- * Places Cherry MX switch footprints at the physical key positions,
- * SOD-123 diode footprints on the back layer, and a Pro Micro
- * microcontroller footprint. Generates net assignments for the
- * row/column matrix and a board outline on Edge.Cuts.
+ * Places switch footprints (per layout.switchType, default Cherry MX) at
+ * the physical key positions, SOD-123 diode footprints on the back layer,
+ * and a Pro Micro microcontroller footprint. Generates net assignments
+ * for the row/column matrix and a board outline on Edge.Cuts.
  */
 export function exportKicadPcb(layout: Layout, matrixMap: MatrixMap): string {
   _uid = 0;
+  const geometry = getSwitchGeometry(layout.switchType);
+  const U_MM = geometry.mmPerU;
 
   // Determine matrix dimensions
   const rowSet = new Set<number>();
@@ -476,8 +476,8 @@ export function exportKicadPcb(layout: Layout, matrixMap: MatrixMap): string {
 
   // Key footprints
   for (const pk of placedKeys) {
-    lines.push(emitSwitchFootprint(pk));
-    lines.push(emitDiodeFootprint(pk));
+    lines.push(emitSwitchFootprint(pk, geometry));
+    lines.push(emitDiodeFootprint(pk, geometry));
   }
 
   // Pro Micro footprint
@@ -490,7 +490,7 @@ export function exportKicadPcb(layout: Layout, matrixMap: MatrixMap): string {
   const plates = layout.plates ?? [];
   if (plates.length > 0) {
     for (const plate of plates) {
-      const outline = plateOutlineMm(plate, layout.plateCornerRadius ?? 0);
+      const outline = plateOutlineMm(plate, layout.plateCornerRadius ?? 0, U_MM);
       if (outline.length < 3) continue;
       lines.push(emitBoardOutline(outline));
 
@@ -509,14 +509,17 @@ export function exportKicadPcb(layout: Layout, matrixMap: MatrixMap): string {
           }
           return inside;
         })
-        .map(switchCutoutRing);
-      for (const [sx, sy] of screwHoleCenters(outerMm, switchCutouts)) {
+        .map((k) => switchCutoutRing(k, geometry));
+      const screwPositions: [number, number][] = plate.screws
+        ? plate.screws.map((s) => [s.x * U_MM, s.y * U_MM])
+        : screwHoleCenters(outerMm, switchCutouts);
+      for (const [sx, sy] of screwPositions) {
         lines.push(emitMountingHole(sx, sy));
       }
     }
   } else {
     const pmPos = placedKeys.length > 0 ? { x: pmX, y: pmY } : undefined;
-    const hull = computeBoardOutline(placedKeys, pmPos);
+    const hull = computeBoardOutline(placedKeys, U_MM, pmPos);
     if (hull.length >= 3) {
       lines.push(emitBoardOutline(hull));
     }
