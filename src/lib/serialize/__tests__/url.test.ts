@@ -50,7 +50,7 @@ describe('URL serialize/deserialize (v2 binary)', () => {
       ],
     });
     const hash = serializeLayout(layout);
-    expect(hash.charAt(0)).toBe('4'); // v4 prefix
+    expect(hash.charAt(0)).toBe('6'); // v6 prefix
     const restored = deserializeLayout(hash);
     expect(restored).not.toBeNull();
     expect(restored!.name).toBe('My Board');
@@ -82,6 +82,69 @@ describe('URL serialize/deserialize (v2 binary)', () => {
       expect(restored!.plates[0].vertices[i].x).toBeCloseTo(layout.plates[0].vertices[i].x, 2);
       expect(restored!.plates[0].vertices[i].y).toBeCloseTo(layout.plates[0].vertices[i].y, 2);
     }
+  });
+
+  it('round-trips manual screws on plates', () => {
+    const layout = makeLayout({
+      keys: [makeKey({ label: 'A', x: 0, y: 0 })],
+      plates: [
+        {
+          vertices: [
+            { x: 0, y: 0 },
+            { x: 1, y: 0 },
+            { x: 1, y: 1 },
+            { x: 0, y: 1 },
+          ],
+          screws: [
+            { x: 0.25, y: 0.25 },
+            { x: 0.75, y: 0.75 },
+          ],
+        },
+      ],
+    });
+    const restored = deserializeLayout(serializeLayout(layout))!;
+    expect(restored.plates[0].screws).toBeDefined();
+    expect(restored.plates[0].screws).toHaveLength(2);
+    expect(restored.plates[0].screws![0].x).toBeCloseTo(0.25, 2);
+    expect(restored.plates[0].screws![1].y).toBeCloseTo(0.75, 2);
+  });
+
+  it('preserves plates without screws (auto mode) on round-trip', () => {
+    const layout = makeLayout({
+      keys: [makeKey({ label: 'A', x: 0, y: 0 })],
+      plates: [
+        {
+          vertices: [
+            { x: 0, y: 0 },
+            { x: 1, y: 0 },
+            { x: 1, y: 1 },
+            { x: 0, y: 1 },
+          ],
+        },
+      ],
+    });
+    const restored = deserializeLayout(serializeLayout(layout))!;
+    expect(restored.plates[0].screws).toBeUndefined();
+  });
+
+  it('round-trips an empty manual screw list (explicit "no screws")', () => {
+    const layout = makeLayout({
+      keys: [makeKey({ label: 'A', x: 0, y: 0 })],
+      plates: [
+        {
+          vertices: [
+            { x: 0, y: 0 },
+            { x: 1, y: 0 },
+            { x: 1, y: 1 },
+            { x: 0, y: 1 },
+          ],
+          screws: [],
+        },
+      ],
+    });
+    const restored = deserializeLayout(serializeLayout(layout))!;
+    expect(restored.plates[0].screws).toBeDefined();
+    expect(restored.plates[0].screws).toHaveLength(0);
   });
 
   it('round-trips multi-plate layouts (split keyboard)', () => {

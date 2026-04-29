@@ -1,8 +1,8 @@
 import yaml from 'js-yaml';
 import type { Key, Layout } from '../../types';
+import { getSwitchGeometry } from '../switchGeometry';
 
-const MM_PER_U = 19.05;
-const toMM = (u: number) => Math.round(u * MM_PER_U * 100) / 100;
+const toMm = (u: number, mmPerU: number) => Math.round(u * mmPerU * 100) / 100;
 
 interface Column {
   name: string;
@@ -76,13 +76,14 @@ function clusterColumns(keys: Key[], threshold = 0.5): Column[] {
 function buildZone(
   keys: Key[],
   rotation: number,
+  mmPerU: number,
 ): Record<string, any> {
   // Convert all key centers to ergogen world coordinates (mm, Y-up) first.
   // This avoids coordinate-space confusion during un-rotation.
   const worldPts = keys.map((k) => ({
     key: k,
-    xMM: toMM(k.x + k.width / 2),
-    yMM: toMM(-(k.y + k.height / 2)),  // flip Y for ergogen
+    xMM: toMm(k.x + k.width / 2, mmPerU),
+    yMM: toMm(-(k.y + k.height / 2), mmPerU),  // flip Y for ergogen
   }));
 
   // Zone anchor = center of bounding box in ergogen world coords
@@ -104,8 +105,8 @@ function buildZone(
   // Cluster into columns using local X positions (convert back to U for clustering)
   const localKeys = localPts.map((p) => ({
     ...p.key,
-    x: p.xMM / MM_PER_U - p.key.width / 2,
-    y: -(p.yMM / MM_PER_U) - p.key.height / 2,
+    x: p.xMM / mmPerU - p.key.width / 2,
+    y: -(p.yMM / mmPerU) - p.key.height / 2,
     rotation: 0,
   }));
   const columns = clusterColumns(localKeys);
@@ -156,10 +157,10 @@ function buildZone(
 
       // Width/height overrides
       if (Math.abs(key.width - 1) > 0.01) {
-        rowData.width = toMM(key.width);
+        rowData.width = toMm(key.width, mmPerU);
       }
       if (Math.abs(key.height - 1) > 0.01) {
-        rowData.height = toMM(key.height);
+        rowData.height = toMm(key.height, mmPerU);
       }
 
       rowsBlock[rowNames[ri]] = Object.keys(rowData).length > 0 ? rowData : null;
@@ -199,6 +200,7 @@ export function exportErgogen(layout: Layout): string {
   if (layout.keys.length === 0) {
     return yaml.dump({ points: { zones: {} } }, { indent: 2, lineWidth: -1 });
   }
+  const mmPerU = getSwitchGeometry(layout.switchType).mmPerU;
 
   // Group keys by rotation angle into separate zones
   const rotationGroups = new Map<number, Key[]>();
@@ -227,7 +229,7 @@ export function exportErgogen(layout: Layout): string {
       zoneName = `rotated_neg_${Math.abs(rotation)}`.replace('.', '_');
     }
 
-    zones[zoneName] = buildZone(keys, rotation);
+    zones[zoneName] = buildZone(keys, rotation, mmPerU);
   }
 
   const doc = { points: { zones } };

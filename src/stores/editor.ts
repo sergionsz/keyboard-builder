@@ -16,6 +16,11 @@ export const gridSnap = writable(0.1);
 /** Minimum gap between keys in mm (0 = disabled) */
 export const minGap = writable(0);
 
+/** How keys are rendered in plate mode. 'show' = full keycaps, 'fade' = dimmed
+ *  for context, 'hide' = no keys drawn (only switch cutouts). */
+export type PlateKeyDisplay = 'show' | 'fade' | 'hide';
+export const plateKeyDisplay = writable<PlateKeyDisplay>('fade');
+
 /** Drag state: tracks which key is being dragged and the offset from its origin. */
 export interface DragState {
   /** ID of the key being dragged */

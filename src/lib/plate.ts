@@ -1,8 +1,9 @@
 import polygonClipping from 'polygon-clipping';
 import type { Ring, MultiPolygon } from 'polygon-clipping';
-import type { Key } from '../types';
+import type { Key, SwitchType } from '../types';
+import { getSwitchGeometry } from './switchGeometry';
 
-const MM_PER_U = 19.05;
+const MX_MM_PER_U = getSwitchGeometry(undefined).mmPerU;
 
 /** A single closed polygon in U coordinates (no holes). */
 export type OutlineRing = { x: number; y: number }[];
@@ -35,11 +36,11 @@ function rotatePoint(
  * Build a padded rectangle polygon for a key, in mm coordinates.
  * Returns a closed ring (first point === last point) suitable for polygon-clipping.
  */
-function keyToRectMM(key: Key, paddingMM: number): Ring {
-  const cx = (key.x + key.width / 2) * MM_PER_U;
-  const cy = (key.y + key.height / 2) * MM_PER_U;
-  const hw = (key.width * MM_PER_U) / 2 + paddingMM;
-  const hh = (key.height * MM_PER_U) / 2 + paddingMM;
+function keyToRectMM(key: Key, paddingMM: number, mmPerU: number): Ring {
+  const cx = (key.x + key.width / 2) * mmPerU;
+  const cy = (key.y + key.height / 2) * mmPerU;
+  const hw = (key.width * mmPerU) / 2 + paddingMM;
+  const hh = (key.height * mmPerU) / 2 + paddingMM;
 
   // Corners before rotation (centered on key center)
   const corners: [number, number][] = [
@@ -138,17 +139,20 @@ export function simplifyRing(
  * the result by removing collinear vertices. Disjoint regions (e.g. split
  * keyboard halves) become separate plates.
  *
- * All coordinates are in U (1U = 19.05mm) to stay consistent with the
- * rest of the layout data model.
+ * All coordinates are in U; the U→mm conversion uses the pitch of the
+ * supplied switch type (default MX, 19.05mm).
  */
 export function generatePlateOutlines(
   keys: Key[],
   paddingMM = 6,
+  switchType?: SwitchType,
 ): PlateOutlineResult {
   if (keys.length === 0) return { plates: [] };
 
+  const mmPerU = getSwitchGeometry(switchType).mmPerU;
+
   // Build polygons in mm, union, then convert back to U
-  const polygons = keys.map((key) => [keyToRectMM(key, paddingMM)]);
+  const polygons = keys.map((key) => [keyToRectMM(key, paddingMM, mmPerU)]);
 
   const merged: MultiPolygon = polygonClipping.union(polygons[0], ...polygons.slice(1));
 
@@ -159,8 +163,8 @@ export function generatePlateOutlines(
     const outerRing = polygon[0];
     const open = outerRing.slice(0, -1);
     const inU: OutlineRing = open.map(([x, y]) => ({
-      x: x / MM_PER_U,
-      y: y / MM_PER_U,
+      x: x / mmPerU,
+      y: y / mmPerU,
     }));
     return simplifyRing(inU);
   });
@@ -184,10 +188,11 @@ export function filletPolygon(
   vertices: OutlineRing,
   radiusMM: number,
   pointsPerArc = 8,
+  mmPerU: number = MX_MM_PER_U,
 ): OutlineRing {
   if (vertices.length < 3 || radiusMM <= 0) return vertices;
 
-  const radiusU = radiusMM / MM_PER_U;
+  const radiusU = radiusMM / mmPerU;
   const n = vertices.length;
   const result: OutlineRing = [];
 

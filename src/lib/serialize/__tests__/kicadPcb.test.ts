@@ -131,6 +131,26 @@ describe('exportKicadPcb', () => {
     expect(pcb).not.toContain('SW_Cherry_MX');
   });
 
+  it('emits Choc V2 footprint and 18mm pitch when switchType is choc-v2', () => {
+    const layout: Layout = {
+      ...makeLayout([makeKey({ label: 'A', x: 2, y: 0 })]),
+      switchType: 'choc-v2',
+    };
+    const pcb = exportKicadPcb(layout, { A: { row: 0, col: 0 } });
+
+    expect(pcb).toContain('keyboard-builder:SW_Kailh_Choc_V2');
+    expect(pcb).not.toContain('keyboard-builder:SW_Cherry_MX');
+    // Switch center: (2 + 0.5) * 18 = 45 (Choc) vs 47.625 (MX)
+    expect(pcb).toContain('(at 45 9');
+  });
+
+  it('defaults to Cherry MX footprint when switchType is unset', () => {
+    const layout = makeLayout([makeKey({ label: 'A', x: 0, y: 0 })]);
+    const pcb = exportKicadPcb(layout, { A: { row: 0, col: 0 } });
+
+    expect(pcb).toContain('keyboard-builder:SW_Cherry_MX');
+  });
+
   it('places a Pro Micro footprint', () => {
     const keys = [
       makeKey({ label: 'A', x: 0, y: 0 }),
@@ -296,5 +316,58 @@ describe('pin assignment consistency', () => {
     const mountingHoles = pcb.split('"MountingHole"').length - 1;
     // Each MountingHole footprint references the name in (footprint ...) and (property "Value" "MountingHole")
     expect(mountingHoles).toBeGreaterThanOrEqual(5);
+  });
+
+  it('uses plate.screws verbatim for mounting holes when defined', () => {
+    const keys = [makeKey({ label: 'A', x: 0, y: 0 })];
+    const layout: Layout = {
+      ...makeLayout(keys),
+      plates: [
+        {
+          vertices: [
+            { x: -1, y: -1 },
+            { x: 2, y: -1 },
+            { x: 2, y: 2 },
+            { x: -1, y: 2 },
+          ],
+          // Two manual screws, both far enough from any auto-pick to be
+          // distinguishable. (At 19.05 mm/U: 38.1 / 19.05 mm.)
+          screws: [
+            { x: 0.5, y: 0.5 },
+            { x: 1.5, y: 1.5 },
+          ],
+        },
+      ],
+      plateCornerRadius: 0,
+    };
+    const pcb = exportKicadPcb(layout, { A: { row: 0, col: 0 } });
+
+    // (footprint "MountingHole" ...) appears once per mounting hole
+    const mountingHoles = (pcb.match(/\(footprint "MountingHole"/g) ?? []).length;
+    expect(mountingHoles).toBe(2);
+    // Coordinates: 0.5 * 19.05 = 9.525, 1.5 * 19.05 = 28.575
+    expect(pcb).toContain('(at 9.525 9.525)');
+    expect(pcb).toContain('(at 28.575 28.575)');
+  });
+
+  it('emits no mounting holes when plate.screws is an empty array', () => {
+    const keys = [makeKey({ label: 'A', x: 0, y: 0 })];
+    const layout: Layout = {
+      ...makeLayout(keys),
+      plates: [
+        {
+          vertices: [
+            { x: -1, y: -1 },
+            { x: 2, y: -1 },
+            { x: 2, y: 2 },
+            { x: -1, y: 2 },
+          ],
+          screws: [],
+        },
+      ],
+      plateCornerRadius: 0,
+    };
+    const pcb = exportKicadPcb(layout, { A: { row: 0, col: 0 } });
+    expect((pcb.match(/\(footprint "MountingHole"/g) ?? []).length).toBe(0);
   });
 });

@@ -1,3 +1,6 @@
+import type { SwitchType } from './lib/switchGeometry';
+export type { SwitchType };
+
 export interface Key {
   id: string;
   x: number;       // absolute position in U from canvas origin
@@ -18,6 +21,13 @@ export interface AlignmentGroup {
 /** A single plate outline: list of vertices in U coordinates. */
 export interface PlateOutline {
   vertices: { x: number; y: number }[];
+  /**
+   * Manual screw hole positions in U coordinates. When undefined, the export
+   * falls back to auto-placement (screwHoleCenters). When defined, these
+   * positions are used verbatim — including an empty array, which means
+   * "no screws".
+   */
+  screws?: { x: number; y: number }[];
 }
 
 export interface Layout {
@@ -39,4 +49,6 @@ export interface Layout {
   plateCornerRadius: number;
   /** Manual Pro Micro pin overrides: physical pin number -> net name (e.g. "ROW0", "COL1") or "" to unassign */
   pinOverrides?: Record<number, string>;
+  /** Mechanical switch family. Affects 1U pitch, plate cutout, and PCB footprint. Defaults to MX. */
+  switchType?: SwitchType;
 }
