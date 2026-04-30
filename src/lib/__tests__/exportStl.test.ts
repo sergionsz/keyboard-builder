@@ -151,6 +151,25 @@ describe('exportPlateStl', () => {
     const stl = exportPlateStl(layout);
     expect(stl).toBe('solid plate\nendsolid plate');
   });
+
+  it('omits stabilizer cutouts when layout.stabilizers is false', () => {
+    const wide = { id: 'space', x: 0, y: 0, rotation: 0, width: 6.25, height: 1, label: '' };
+    const { plates } = generatePlateOutlines([wide]);
+    const layoutOn = baseLayout({
+      keys: [wide],
+      plates: plates.map((v) => ({ vertices: v, screws: [] })),
+      stabilizers: true,
+    });
+    const layoutOff = baseLayout({
+      keys: [wide],
+      plates: plates.map((v) => ({ vertices: v, screws: [] })),
+      stabilizers: false,
+    });
+    const facetsOn = parseFacets(exportPlateStl(layoutOn));
+    const facetsOff = parseFacets(exportPlateStl(layoutOff));
+    // Two extra rectangular cutouts (one per stem) add wall + cap geometry
+    expect(facetsOn.length).toBeGreaterThan(facetsOff.length);
+  });
 });
 
 describe('exportPlateStl with manual screws', () => {

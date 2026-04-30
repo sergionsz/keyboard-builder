@@ -80,11 +80,12 @@ function fromBase64url(s: string): Uint8Array {
   return out;
 }
 
-// ── Serialize (v7 binary) ───────────────────────────────────────────
+// ── Serialize (v8 binary) ───────────────────────────────────────────
 //
-// v7 extends v6 with a single trailing byte:
-//   1 byte  hotswap (0 = off, 1 = on)
-// Reading older versions leaves hotswap: false.
+// v8 extends v7 with a single trailing byte:
+//   1 byte  stabilizers (0 = off, 1 = on)
+// Reading v1-v7 defaults stabilizers to true (the new default-on feature
+// shouldn't disappear when legacy URLs are loaded).
 
 export function serializeLayout(layout: Layout): string {
   const idToIndex = new Map<string, number>();
@@ -124,13 +125,13 @@ export function serializeLayout(layout: Layout): string {
     0,
   );
   const buf = new ArrayBuffer(
-    4 + 256 + layout.keys.length * 30 + mirrorPairs.length * 4 + 10 + alignGroupBytes + matrixEntries.length * 4 + plateBytes + 4 + 1 + screwBytes + 1,
+    4 + 256 + layout.keys.length * 30 + mirrorPairs.length * 4 + 10 + alignGroupBytes + matrixEntries.length * 4 + plateBytes + 4 + 1 + screwBytes + 2,
   );
   const view = new DataView(buf);
   let off = 0;
 
   // Version
-  view.setUint8(off++, 7);
+  view.setUint8(off++, 8);
 
   // Name
   const nameBytes = TEXT.encode(layout.name);
@@ -229,15 +230,23 @@ export function serializeLayout(layout: Layout): string {
   // Hotswap (v7+)
   view.setUint8(off++, layout.hotswap ? 1 : 0);
 
+  // Stabilizers (v8+). Undefined defaults to on.
+  view.setUint8(off++, layout.stabilizers === false ? 0 : 1);
+
   const raw = new Uint8Array(buf, 0, off);
   const compressed = deflateSync(raw, { level: 9 });
-  return '7' + toBase64url(compressed);
+  return '8' + toBase64url(compressed);
 }
 
 // ── Deserialize ─────────────────────────────────────────────────────
 
 export function deserializeLayout(hash: string): Layout | null {
   if (!hash) return null;
+
+  // v8 binary format (adds trailing stabilizers byte)
+  if (hash.charAt(0) === '8') {
+    return deserializeV8(hash.slice(1));
+  }
 
   // v7 binary format (adds trailing hotswap byte)
   if (hash.charAt(0) === '7') {
@@ -339,7 +348,7 @@ function deserializeV2(b64: string): Layout | null {
     minGap = view.getUint16(off, true) / 100; off += 2;
   }
 
-  return { name, keys, mirrorPairs, mirrorAxisX, minGap, matrixOverrides: {}, alignmentGroups: [], plates: [], plateCornerRadius: 0, switchType: 'mx', hotswap: false };
+  return { name, keys, mirrorPairs, mirrorAxisX, minGap, matrixOverrides: {}, alignmentGroups: [], plates: [], plateCornerRadius: 0, switchType: 'mx', hotswap: false, stabilizers: true };
 }
 
 function deserializeV3(b64: string): Layout | null {
@@ -439,7 +448,7 @@ function deserializeV3(b64: string): Layout | null {
     }
   }
 
-  return { name, keys, mirrorPairs, mirrorAxisX, minGap, matrixOverrides, alignmentGroups, plates: [], plateCornerRadius: 0, switchType: 'mx', hotswap: false };
+  return { name, keys, mirrorPairs, mirrorAxisX, minGap, matrixOverrides, alignmentGroups, plates: [], plateCornerRadius: 0, switchType: 'mx', hotswap: false, stabilizers: true };
 }
 
 function deserializeV4(b64: string): Layout | null {
@@ -551,7 +560,7 @@ function deserializeV4(b64: string): Layout | null {
 
   const plateCornerRadius = view.getUint16(off, true) / 100; off += 2;
 
-  return { name, keys, mirrorPairs, mirrorAxisX, minGap, matrixOverrides, alignmentGroups, plates, plateCornerRadius, switchType: 'mx', hotswap: false };
+  return { name, keys, mirrorPairs, mirrorAxisX, minGap, matrixOverrides, alignmentGroups, plates, plateCornerRadius, switchType: 'mx', hotswap: false, stabilizers: true };
 }
 
 function deserializeV5(b64: string): Layout | null {
@@ -659,7 +668,7 @@ function deserializeV5(b64: string): Layout | null {
   const switchTypeCode = view.getUint8(off++);
   const switchType: SwitchType = SWITCH_TYPE_BY_CODE[switchTypeCode] ?? 'mx';
 
-  return { name, keys, mirrorPairs, mirrorAxisX, minGap, matrixOverrides, alignmentGroups, plates, plateCornerRadius, switchType, hotswap: false };
+  return { name, keys, mirrorPairs, mirrorAxisX, minGap, matrixOverrides, alignmentGroups, plates, plateCornerRadius, switchType, hotswap: false, stabilizers: true };
 }
 
 function deserializeV6(b64: string): Layout | null {
@@ -782,7 +791,7 @@ function deserializeV6(b64: string): Layout | null {
     }
   }
 
-  return { name, keys, mirrorPairs, mirrorAxisX, minGap, matrixOverrides, alignmentGroups, plates, plateCornerRadius, switchType, hotswap: false };
+  return { name, keys, mirrorPairs, mirrorAxisX, minGap, matrixOverrides, alignmentGroups, plates, plateCornerRadius, switchType, hotswap: false, stabilizers: true };
 }
 
 function deserializeV7(b64: string): Layout | null {
@@ -906,7 +915,132 @@ function deserializeV7(b64: string): Layout | null {
 
   const hotswap = view.getUint8(off++) === 1;
 
-  return { name, keys, mirrorPairs, mirrorAxisX, minGap, matrixOverrides, alignmentGroups, plates, plateCornerRadius, switchType, hotswap };
+  return { name, keys, mirrorPairs, mirrorAxisX, minGap, matrixOverrides, alignmentGroups, plates, plateCornerRadius, switchType, hotswap, stabilizers: true };
+}
+
+function deserializeV8(b64: string): Layout | null {
+  let raw: Uint8Array;
+  try {
+    raw = inflateSync(fromBase64url(b64));
+  } catch {
+    return null;
+  }
+
+  const view = new DataView(raw.buffer, raw.byteOffset, raw.byteLength);
+  let off = 0;
+
+  const version = view.getUint8(off++);
+  if (version !== 8) return null;
+
+  const nameLen = view.getUint8(off++);
+  const name = DECODE.decode(raw.subarray(off, off + nameLen));
+  off += nameLen;
+
+  const keyCount = view.getUint16(off, true); off += 2;
+  const keys: Key[] = [];
+
+  for (let i = 0; i < keyCount; i++) {
+    const x = view.getInt16(off, true) / 100; off += 2;
+    const y = view.getInt16(off, true) / 100; off += 2;
+    const flags = view.getUint8(off++);
+
+    let width = 1;
+    let height = 1;
+    let rotation = 0;
+
+    if (flags & 1) { width = view.getUint16(off, true) / 100; off += 2; }
+    if (flags & 2) { height = view.getUint16(off, true) / 100; off += 2; }
+    if (flags & 4) { rotation = view.getInt16(off, true) / 10; off += 2; }
+
+    const labelLen = view.getUint8(off++);
+    const label = DECODE.decode(raw.subarray(off, off + labelLen));
+    off += labelLen;
+
+    keys.push({ id: uuid(), x, y, width, height, rotation, label });
+  }
+
+  const pairCount = view.getUint16(off, true); off += 2;
+  const mirrorPairs: Record<string, string> = {};
+  for (let i = 0; i < pairCount; i++) {
+    const iA = view.getUint16(off, true); off += 2;
+    const iB = view.getUint16(off, true); off += 2;
+    if (iA < keys.length && iB < keys.length) {
+      mirrorPairs[keys[iA].id] = keys[iB].id;
+      mirrorPairs[keys[iB].id] = keys[iA].id;
+    }
+  }
+
+  let mirrorAxisX = 0;
+  if (pairCount > 0) {
+    mirrorAxisX = view.getFloat32(off, true); off += 4;
+  }
+
+  const minGap = view.getUint16(off, true) / 100; off += 2;
+
+  const matrixOverrides: Record<string, { row: number; col: number }> = {};
+  const overrideCount = view.getUint16(off, true); off += 2;
+  for (let i = 0; i < overrideCount; i++) {
+    const idx = view.getUint16(off, true); off += 2;
+    const row = view.getUint8(off++);
+    const col = view.getUint8(off++);
+    if (idx < keys.length) {
+      matrixOverrides[keys[idx].id] = { row, col };
+    }
+  }
+
+  const alignmentGroups: { id: string; axis: 'x' | 'y'; value: number; keyIds: string[] }[] = [];
+  const groupCount = view.getUint16(off, true); off += 2;
+  for (let i = 0; i < groupCount; i++) {
+    const axisVal = view.getUint8(off++);
+    const axis: 'x' | 'y' = axisVal === 0 ? 'x' : 'y';
+    const value = view.getInt16(off, true) / 100; off += 2;
+    const memberCount = view.getUint16(off, true); off += 2;
+    const keyIds: string[] = [];
+    for (let j = 0; j < memberCount; j++) {
+      const idx = view.getUint16(off, true); off += 2;
+      if (idx < keys.length) keyIds.push(keys[idx].id);
+    }
+    if (keyIds.length >= 2) {
+      alignmentGroups.push({ id: uuid(), axis, value, keyIds });
+    }
+  }
+
+  const plates: { vertices: { x: number; y: number }[]; screws?: { x: number; y: number }[] }[] = [];
+  const plateCount = view.getUint16(off, true); off += 2;
+  for (let i = 0; i < plateCount; i++) {
+    const vertCount = view.getUint16(off, true); off += 2;
+    const vertices: { x: number; y: number }[] = [];
+    for (let j = 0; j < vertCount; j++) {
+      const x = view.getInt16(off, true) / 100; off += 2;
+      const y = view.getInt16(off, true) / 100; off += 2;
+      vertices.push({ x, y });
+    }
+    plates.push({ vertices });
+  }
+
+  const plateCornerRadius = view.getUint16(off, true) / 100; off += 2;
+
+  const switchTypeCode = view.getUint8(off++);
+  const switchType: SwitchType = SWITCH_TYPE_BY_CODE[switchTypeCode] ?? 'mx';
+
+  for (let i = 0; i < plates.length; i++) {
+    const flag = view.getUint8(off++);
+    if (flag === 1) {
+      const screwCount = view.getUint16(off, true); off += 2;
+      const screws: { x: number; y: number }[] = [];
+      for (let j = 0; j < screwCount; j++) {
+        const x = view.getInt16(off, true) / 100; off += 2;
+        const y = view.getInt16(off, true) / 100; off += 2;
+        screws.push({ x, y });
+      }
+      plates[i].screws = screws;
+    }
+  }
+
+  const hotswap = view.getUint8(off++) === 1;
+  const stabilizers = view.getUint8(off++) === 1;
+
+  return { name, keys, mirrorPairs, mirrorAxisX, minGap, matrixOverrides, alignmentGroups, plates, plateCornerRadius, switchType, hotswap, stabilizers };
 }
 
 // ── v1 fallback (lz-string JSON) ────────────────────────────────────
@@ -976,5 +1110,6 @@ function deserializeV1(hash: string): Layout | null {
     plates: [], plateCornerRadius: 0,
     switchType: 'mx',
     hotswap: false,
+    stabilizers: true,
   };
 }

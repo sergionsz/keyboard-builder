@@ -53,4 +53,10 @@ export interface Layout {
   switchType?: SwitchType;
   /** When true, the PCB export adds Kailh-style hot-swap socket pads on the back layer. */
   hotswap?: boolean;
+  /**
+   * When true (or omitted, for backwards compatibility), wide keys (≥ 2u) get
+   * plate-mount stabilizer cutouts in the plate STL and the BOM lists the
+   * required stabilizer hardware.
+   */
+  stabilizers?: boolean;
 }

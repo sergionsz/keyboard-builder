@@ -5,11 +5,18 @@
 
   let cornerRadius = $derived($layout.plateCornerRadius);
   let hasManualScrews = $derived($layout.plates.some((p) => p.screws !== undefined));
+  let stabilizersEnabled = $derived($layout.stabilizers !== false);
 
   function onRadiusInput(e: Event) {
     const val = parseFloat((e.currentTarget as HTMLInputElement).value);
     pushUndoExported();
     updateLayoutField('plateCornerRadius', isNaN(val) || val < 0 ? 0 : val);
+  }
+
+  function onStabilizersChange(e: Event) {
+    const checked = (e.currentTarget as HTMLInputElement).checked;
+    pushUndoExported();
+    updateLayoutField('stabilizers', checked);
   }
 
   function regenerate() {
@@ -94,6 +101,16 @@
   <button class="action-btn" onclick={simplify} disabled={plateCount === 0}>
     Simplify
   </button>
+
+  <label class="checkbox-field" for="plate-stabilizers">
+    <input
+      id="plate-stabilizers"
+      type="checkbox"
+      checked={stabilizersEnabled}
+      onchange={onStabilizersChange}
+    />
+    <span>Stabilizer cutouts</span>
+  </label>
 
   <div class="field">
     <label>Keys</label>
@@ -197,6 +214,24 @@
   .action-btn:hover:not(:disabled) {
     background: #444;
     color: #fff;
+  }
+
+  .checkbox-field {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin: 4px 0 8px;
+    font-size: 12px;
+    color: #ccc;
+    cursor: pointer;
+    text-transform: none;
+    letter-spacing: normal;
+  }
+
+  .checkbox-field input {
+    width: auto;
+    margin: 0;
+    cursor: pointer;
   }
 
   .screw-section {

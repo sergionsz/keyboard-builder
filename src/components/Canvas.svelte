@@ -13,6 +13,7 @@
   import { PRO_MICRO_PINS } from '../lib/serialize/proMicro';
   import { getSwitchGeometry } from '../lib/switchGeometry';
   import { resolvePlateScrewsU, isValidPlateScrewU } from '../lib/exportStl';
+  import { stabilizerCutoutRings } from '../lib/stabilizers';
 
   // MCU visualization constants (in canvas units = U)
   const MCU_W = 2;      // width in U
@@ -1354,6 +1355,8 @@
 
     <!-- Switch cutouts (plate mode): drawn on top of keys so they're visible regardless of key opacity. -->
     {#if $editorMode === 'plate'}
+      {@const plateGeometry = getSwitchGeometry($layout.switchType)}
+      {@const mmToPx = SCALE / plateGeometry.mmPerU}
       {#each $layout.keys as key (key.id)}
         {@const kcx = (key.x + key.width / 2) * SCALE}
         {@const kcy = (key.y + key.height / 2) * SCALE}
@@ -1368,6 +1371,16 @@
           stroke-width={1.5 / $zoom}
           pointer-events="none"
         />
+        {#if $layout.stabilizers !== false}
+          {#each stabilizerCutoutRings(key, plateGeometry) as ring}
+            <polygon
+              points={ring.map(([x, y]) => `${x * mmToPx},${y * mmToPx}`).join(' ')}
+              class="switch-cutout"
+              stroke-width={1.5 / $zoom}
+              pointer-events="none"
+            />
+          {/each}
+        {/if}
       {/each}
     {/if}
     <!-- Rotation handle for selected keys (layout mode only) -->

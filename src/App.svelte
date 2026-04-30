@@ -11,6 +11,7 @@
   import { exportKicadPcb } from './lib/serialize/kicadPcb';
   import { exportPng } from './lib/exportPng';
   import { exportPlateStl } from './lib/exportStl';
+  import { exportShoppingList } from './lib/exportShoppingList';
   import { matrix } from './stores/schematic';
 
   let showHelp = $state(false);
@@ -98,6 +99,17 @@
     URL.revokeObjectURL(url);
   }
 
+  function onExportShoppingList() {
+    const txt = exportShoppingList($layout);
+    const blob = new Blob([txt], { type: 'text/plain' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `${$layout.name || 'layout'}-shopping-list.txt`;
+    a.click();
+    URL.revokeObjectURL(url);
+  }
+
   async function onExportPng() {
     const svgEl = document.getElementById('keyboard-canvas') as SVGSVGElement | null;
     if (!svgEl) return;
@@ -151,6 +163,7 @@
       {#if $editorMode !== 'plate'}
         <button onclick={onExportPng}>Export PNG</button>
       {/if}
+      <button onclick={onExportShoppingList}>Shopping List</button>
       <button class="help-btn" onclick={() => showHelp = true}>?</button>
     </div>
   </header>
