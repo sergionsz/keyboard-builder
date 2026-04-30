@@ -4,6 +4,7 @@ import type { Pair } from 'polygon-clipping';
 import type { Layout, Key } from '../types';
 import { filletPolygon } from './plate';
 import { getSwitchGeometry, type SwitchGeometry } from './switchGeometry';
+import { stabilizerCutoutRings } from './stabilizers';
 
 const MX = getSwitchGeometry(undefined);
 
@@ -189,6 +190,9 @@ export function resolvePlateScrewsU(
     const kcy = (key.y + key.height / 2) * mmPerU;
     if (pointInRing(kcx, kcy, outerMm)) {
       switchHoles.push(switchCutoutRing(key, geometry));
+      if (layout.stabilizers !== false) {
+        switchHoles.push(...stabilizerCutoutRings(key, geometry));
+      }
     }
   }
 
@@ -223,6 +227,9 @@ export function isValidPlateScrewU(
     const kcy = (key.y + key.height / 2) * mmPerU;
     if (pointInRing(kcx, kcy, outerMm)) {
       switchHoles.push(switchCutoutRing(key, geometry));
+      if (layout.stabilizers !== false) {
+        switchHoles.push(...stabilizerCutoutRings(key, geometry));
+      }
     }
   }
   return isValidScrewPos(pos.x * mmPerU, pos.y * mmPerU, outerMm, switchHoles);
@@ -452,6 +459,9 @@ export function exportPlateStl(layout: Layout): string {
       const kcy = (key.y + key.height / 2) * mmPerU;
       if (pointInRing(kcx, kcy, outerMm)) {
         switchHoles.push(switchCutoutRing(key, geometry));
+        if (layout.stabilizers !== false) {
+          switchHoles.push(...stabilizerCutoutRings(key, geometry));
+        }
       }
     }
 

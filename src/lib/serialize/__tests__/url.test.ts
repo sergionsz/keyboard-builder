@@ -50,7 +50,7 @@ describe('URL serialize/deserialize (v2 binary)', () => {
       ],
     });
     const hash = serializeLayout(layout);
-    expect(hash.charAt(0)).toBe('7'); // v7 prefix
+    expect(hash.charAt(0)).toBe('8'); // v8 prefix
     const restored = deserializeLayout(hash);
     expect(restored).not.toBeNull();
     expect(restored!.name).toBe('My Board');
@@ -226,6 +226,25 @@ describe('URL serialize/deserialize (v2 binary)', () => {
     });
     const restoredOff = deserializeLayout(serializeLayout(layoutOff))!;
     expect(restoredOff.hotswap).toBe(false);
+  });
+
+  it('round-trips the stabilizers flag', () => {
+    const off = makeLayout({
+      keys: [makeKey({ label: 'A', x: 0, y: 0 })],
+      stabilizers: false,
+    });
+    expect(deserializeLayout(serializeLayout(off))!.stabilizers).toBe(false);
+
+    const on = makeLayout({
+      keys: [makeKey({ label: 'A', x: 0, y: 0 })],
+      stabilizers: true,
+    });
+    expect(deserializeLayout(serializeLayout(on))!.stabilizers).toBe(true);
+  });
+
+  it('defaults stabilizers to on when the field is omitted', () => {
+    const layout = makeLayout({ keys: [makeKey({ label: 'A', x: 0, y: 0 })] });
+    expect(deserializeLayout(serializeLayout(layout))!.stabilizers).toBe(true);
   });
 
   it('generates fresh IDs on deserialize', () => {

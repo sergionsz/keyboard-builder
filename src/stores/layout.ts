@@ -88,6 +88,7 @@ function createSampleLayout(): Layout {
     plateCornerRadius: 0,
     switchType: 'mx',
     hotswap: false,
+    stabilizers: true,
   };
 }
 
