@@ -4,6 +4,7 @@ import { PRO_MICRO_PINS, assignPinsToMatrix, applyPinOverrides } from './proMicr
 import { filletPolygon } from '../plate';
 import { screwHoleCenters, switchCutoutRing, SCREW_HOLE_DIAMETER } from '../exportStl';
 import { getSwitchGeometry, type SwitchGeometry } from '../switchGeometry';
+import { MCU_BOARD, MCU_USB, mcuPinY } from '../mcu';
 
 const BOARD_MARGIN = 9; // mm margin around keys for board outline
 
@@ -25,14 +26,19 @@ const D_PAD_A = { x: 1.35, y: 0 };  // anode, connects to switch pin 2
 const D_PAD_W = 0.6;
 const D_PAD_H = 0.7;
 
-// --- Pro Micro footprint geometry ---
-const PM_ROW_SPACING = 7.62;  // half of 15.24mm row-to-row (600 mil)
-const PM_PIN_PITCH = 2.54;
-const PM_PINS_PER_SIDE = 12;
-const PM_PAD_SIZE = 1.7;
-const PM_PAD_DRILL = 1.0;
-// Footprint total height
-const PM_HEIGHT = (PM_PINS_PER_SIDE - 1) * PM_PIN_PITCH; // 27.94mm
+// Standard MX keycap gap: 19.05mm pitch yields an 18mm physical keycap, leaving
+// 1.05mm between adjacent 1U keys. Used so the keycap outline on Dwgs.User
+// matches the real keycap size (not the pitch) and adjacent keys don't overlap.
+const KEYCAP_GAP = 1.05;
+
+// --- Pro Micro footprint geometry (from src/lib/mcu.ts, mirrors ceoloide nice_nano) ---
+const PM_ROW_SPACING = MCU_BOARD.pinRowX;
+const PM_PIN_PITCH = MCU_BOARD.pinPitch;
+const PM_PINS_PER_SIDE = MCU_BOARD.pinsPerSide;
+const PM_PAD_SIZE = MCU_BOARD.padSize;
+const PM_PAD_DRILL = MCU_BOARD.padDrill;
+// Span from top pin to bottom pin (used by board outline padding).
+const PM_HEIGHT = (PM_PINS_PER_SIDE - 1) * PM_PIN_PITCH;
 
 function layers(): string {
   return `  (layers
@@ -121,10 +127,19 @@ interface PlacedKey {
 function emitSwitchFootprint(pk: PlacedKey, geometry: SwitchGeometry, hotswap: boolean): string {
   const { xMm, yMm, rotation, index, key, rowNet, bridgeNet } = pk;
   const label = sanitize(key.label) || `R${pk.row}C${pk.col}`;
-  const atRot = rotation !== 0 ? ` ${rotation}` : '';
+  // App rotation is in SVG convention (positive = clockwise, Y-down). KiCad's
+  // (at x y r) is mathematical (positive = counter-clockwise), so negate.
+  const kicadRot = -rotation;
+  const atRot = kicadRot !== 0 ? ` ${kicadRot}` : '';
   const fp = geometry.footprint;
   const half = geometry.cutoutSize / 2;
   const courtyard = half + 0.8;
+  // Keycap outline = pitch minus the standard gap, matching real keycap size
+  // rather than the U pitch (19.05mm pitch → 18mm keycap, etc.).
+  const keycapXo = (key.width * geometry.mmPerU - KEYCAP_GAP) / 2;
+  const keycapYo = (key.height * geometry.mmPerU - KEYCAP_GAP) / 2;
+  // Corner bracket length on Dwgs.User; mirrors ceoloide switch_mx.js corner_marks.
+  const cornerArm = 1;
 
   const extras: string[] = [];
   if (fp.centerDrill > 0) {
@@ -142,13 +157,27 @@ function emitSwitchFootprint(pk: PlacedKey, geometry: SwitchGeometry, hotswap: b
   }
   if (hotswap && fp.hotswapSocket) {
     const sock = fp.hotswapSocket;
-    extras.push(`    (pad "1" smd roundrect (at ${sock.pad1.x} ${sock.pad1.y}) (size ${sock.padSize.w} ${sock.padSize.h}) (roundrect_rratio 0.25)
+    // Pad shape `rect` matches ceoloide switch_mx.js hotswap_back default.
+    extras.push(`    (pad "1" smd rect (at ${sock.pad1.x} ${sock.pad1.y}) (size ${sock.padSize.w} ${sock.padSize.h})
       (layers "B.Cu" "B.Paste" "B.Mask")
       (net ${rowNet.id} "${rowNet.name}")
       (uuid "${uid()}"))`);
-    extras.push(`    (pad "2" smd roundrect (at ${sock.pad2.x} ${sock.pad2.y}) (size ${sock.padSize.w} ${sock.padSize.h}) (roundrect_rratio 0.25)
+    extras.push(`    (pad "2" smd rect (at ${sock.pad2.x} ${sock.pad2.y}) (size ${sock.padSize.w} ${sock.padSize.h})
       (layers "B.Cu" "B.Paste" "B.Mask")
       (net ${bridgeNet.id} "${bridgeNet.name}")
+      (uuid "${uid()}"))`);
+    // Kailh socket silkscreen outline on B.SilkS, mirrored from ceoloide
+    // switch_mx.js hotswap_silkscreen_back.
+    extras.push(`    (fp_poly
+      (pts
+        (xy -3.6 -6.5) (xy -3.8 -6.5) (xy -4.1 -6.45) (xy -4.4 -6.35) (xy -4.6 -6.25) (xy -4.75 -6.15) (xy -4.95 -6)
+        (xy -5.1 -5.85) (xy -5.25 -5.65) (xy -5.4 -5.4) (xy -5.5 -5) (xy -5.5 -4.6) (xy -5.35 -4.5) (xy -5.2 -4.4)
+        (xy -4.75 -4.65) (xy -4.5 -4.75) (xy -4.05 -4.85) (xy -3.55 -4.85) (xy -2.95 -4.7) (xy -2.45 -4.4) (xy -2.15 -4.15)
+        (xy -1.75 -3.6) (xy -1.55 -3.05) (xy -1.5 -2.6) (xy -1.25 -2.8) (xy -0.9 -2.9) (xy -0.4 -2.95) (xy 1.65 -2.95)
+        (xy 1.2 -3.2) (xy 0.95 -3.4) (xy 0.65 -3.75) (xy 0.5 -4) (xy 0.35 -4.35) (xy 0.25 -4.75) (xy 0.25 -5.05)
+        (xy 0.25 -5.4) (xy 0.3 -5.65) (xy 0.45 -6.05) (xy 0.75 -6.5)
+      )
+      (stroke (width 0.4) (type solid)) (fill solid) (layer "B.SilkS")
       (uuid "${uid()}"))`);
   }
 
@@ -176,6 +205,27 @@ function emitSwitchFootprint(pk: PlacedKey, geometry: SwitchGeometry, hotswap: b
     (fp_line (start ${-half} ${half}) (end ${-half} ${-half})
       (stroke (width 0.1) (type solid)) (layer "F.Fab")
       (uuid "${uid()}"))
+    ${''/* Switch outline corner brackets on Dwgs.User (from ceoloide switch_mx.js) */}
+    (fp_line (start ${-half} ${-half + cornerArm}) (end ${-half} ${-half})
+      (stroke (width 0.15) (type solid)) (layer "Dwgs.User") (uuid "${uid()}"))
+    (fp_line (start ${-half} ${-half}) (end ${-half + cornerArm} ${-half})
+      (stroke (width 0.15) (type solid)) (layer "Dwgs.User") (uuid "${uid()}"))
+    (fp_line (start ${half - cornerArm} ${-half}) (end ${half} ${-half})
+      (stroke (width 0.15) (type solid)) (layer "Dwgs.User") (uuid "${uid()}"))
+    (fp_line (start ${half} ${-half}) (end ${half} ${-half + cornerArm})
+      (stroke (width 0.15) (type solid)) (layer "Dwgs.User") (uuid "${uid()}"))
+    (fp_line (start ${half} ${half - cornerArm}) (end ${half} ${half})
+      (stroke (width 0.15) (type solid)) (layer "Dwgs.User") (uuid "${uid()}"))
+    (fp_line (start ${half} ${half}) (end ${half - cornerArm} ${half})
+      (stroke (width 0.15) (type solid)) (layer "Dwgs.User") (uuid "${uid()}"))
+    (fp_line (start ${-half + cornerArm} ${half}) (end ${-half} ${half})
+      (stroke (width 0.15) (type solid)) (layer "Dwgs.User") (uuid "${uid()}"))
+    (fp_line (start ${-half} ${half}) (end ${-half} ${half - cornerArm})
+      (stroke (width 0.15) (type solid)) (layer "Dwgs.User") (uuid "${uid()}"))
+    ${''/* Keycap footprint outline on Dwgs.User (from ceoloide switch_mx.js) */}
+    (fp_rect (start ${-keycapXo} ${-keycapYo}) (end ${keycapXo} ${keycapYo})
+      (stroke (width 0.15) (type solid)) (fill none) (layer "Dwgs.User")
+      (uuid "${uid()}"))
     (pad "1" thru_hole circle (at ${fp.pin1.x} ${fp.pin1.y}) (size ${fp.pinPad} ${fp.pinPad}) (drill ${fp.pinDrill})
       (layers "*.Cu" "*.Mask")
       (net ${rowNet.id} "${rowNet.name}")
@@ -190,33 +240,48 @@ ${extras.join('\n')}
 
 function emitDiodeFootprint(pk: PlacedKey, geometry: SwitchGeometry): string {
   const { xMm, yMm, rotation, index, colNet, bridgeNet } = pk;
-  const dX = xMm + geometry.footprint.diodeOffset.x;
-  const dY = yMm + geometry.footprint.diodeOffset.y;
-  const atRot = rotation !== 0 ? ` ${rotation}` : '';
+  // Rotate the diode offset so the diode follows the switch's rotation (the
+  // offset is defined in the switch's local frame). App convention is Y-down
+  // CW positive; the formula below is correct for that frame.
+  const rad = (rotation * Math.PI) / 180;
+  const cos = Math.cos(rad);
+  const sin = Math.sin(rad);
+  const ox = geometry.footprint.diodeOffset.x;
+  const oy = geometry.footprint.diodeOffset.y;
+  const dX = r(xMm + ox * cos - oy * sin);
+  const dY = r(yMm + ox * sin + oy * cos);
+  // Negate rotation: app uses Y-down CW positive; KiCad's (at) is math CCW
+  // positive (matches the same convention as ergogen, see ergogen.ts:95).
+  const kicadRot = -rotation;
+  const atRot = kicadRot !== 0 ? ` ${kicadRot}` : '';
+  // Diode silkscreen: standard symbol (triangle pointing toward the cathode
+  // bar) + leads. Geometry mirrored from ceoloide diode_tht_sod123.js
+  // front_silk; placed on B.SilkS since this footprint sits on B.Cu.
   return `  (footprint "keyboard-builder:D_SOD-123" (layer "B.Cu") (at ${dX} ${dY}${atRot})
     (uuid "${uid()}")
     (property "Reference" "D${index}" (at 0 -2 0) (layer "B.SilkS")
       (effects (font (size 1 1) (thickness 0.15)) (justify mirror)))
     (property "Value" "D" (at 0 2 0) (layer "B.Fab")
       (effects (font (size 1 1) (thickness 0.15)) (justify mirror)))
-    (fp_line (start -1.85 -0.8) (end 1.85 -0.8)
-      (stroke (width 0.12) (type solid)) (layer "B.SilkS")
-      (uuid "${uid()}"))
-    (fp_line (start -1.85 0.8) (end 1.85 0.8)
-      (stroke (width 0.12) (type solid)) (layer "B.SilkS")
-      (uuid "${uid()}"))
-    (fp_line (start -1.85 -0.8) (end -1.85 0.8)
-      (stroke (width 0.12) (type solid)) (layer "B.SilkS")
-      (uuid "${uid()}"))
+    ${''/* Body courtyard */}
     (fp_rect (start -2.05 -1.05) (end 2.05 1.05)
       (stroke (width 0.05) (type solid)) (fill none) (layer "B.CrtYd")
       (uuid "${uid()}"))
-    (fp_line (start -0.75 0) (end -0.75 -0.6)
-      (stroke (width 0.1) (type solid)) (layer "B.Fab")
-      (uuid "${uid()}"))
-    (fp_line (start -0.75 0) (end -0.75 0.6)
-      (stroke (width 0.1) (type solid)) (layer "B.Fab")
-      (uuid "${uid()}"))
+    ${''/* Diode symbol on B.SilkS: triangle apex + cathode bar at x=-0.35, leads extend to ±0.75 */}
+    (fp_line (start 0.25 0) (end 0.75 0)
+      (stroke (width 0.1) (type solid)) (layer "B.SilkS") (uuid "${uid()}"))
+    (fp_line (start 0.25 0.4) (end -0.35 0)
+      (stroke (width 0.1) (type solid)) (layer "B.SilkS") (uuid "${uid()}"))
+    (fp_line (start 0.25 -0.4) (end 0.25 0.4)
+      (stroke (width 0.1) (type solid)) (layer "B.SilkS") (uuid "${uid()}"))
+    (fp_line (start -0.35 0) (end 0.25 -0.4)
+      (stroke (width 0.1) (type solid)) (layer "B.SilkS") (uuid "${uid()}"))
+    (fp_line (start -0.35 0) (end -0.35 0.55)
+      (stroke (width 0.1) (type solid)) (layer "B.SilkS") (uuid "${uid()}"))
+    (fp_line (start -0.35 0) (end -0.35 -0.55)
+      (stroke (width 0.1) (type solid)) (layer "B.SilkS") (uuid "${uid()}"))
+    (fp_line (start -0.75 0) (end -0.35 0)
+      (stroke (width 0.1) (type solid)) (layer "B.SilkS") (uuid "${uid()}"))
     (pad "1" smd rect (at ${D_PAD_K.x} ${D_PAD_K.y}) (size ${D_PAD_W} ${D_PAD_H})
       (layers "B.Cu" "B.Paste" "B.Mask")
       (net ${colNet.id} "${colNet.name}")
@@ -233,44 +298,65 @@ function emitProMicroFootprint(
   y: number,
   pinNets: Record<number, NetInfo>,
 ): string {
-  const halfH = PM_HEIGHT / 2;
+  const { halfW, top, bottom } = MCU_BOARD;
   const padLines: string[] = [];
+  const labelLines: string[] = [];
 
   for (const p of PRO_MICRO_PINS) {
     const px = p.side === 'left' ? -PM_ROW_SPACING : PM_ROW_SPACING;
-    const py = -halfH + p.sideIndex * PM_PIN_PITCH;
+    const py = mcuPinY(p.sideIndex);
     const net = pinNets[p.pin];
     const netStr = net ? `\n      (net ${net.id} "${net.name}")` : '';
     padLines.push(`    (pad "${p.pin}" thru_hole circle (at ${px} ${py}) (size ${PM_PAD_SIZE} ${PM_PAD_SIZE}) (drill ${PM_PAD_DRILL})
       (layers "*.Cu" "*.Mask")${netStr}
       (uuid "${uid()}"))`);
+
+    // Per-pin silk label inside the body, useful when soldering the bare PCB.
+    const labelX = p.side === 'left' ? -PM_ROW_SPACING + 1.6 : PM_ROW_SPACING - 1.6;
+    const justify = p.side === 'left' ? 'left' : 'right';
+    labelLines.push(`    (fp_text user "${p.label}" (at ${labelX} ${py}) (layer "F.SilkS")
+      (effects (font (size 0.6 0.6) (thickness 0.1)) (justify ${justify}))
+      (uuid "${uid()}"))`);
   }
 
-  // Silkscreen outline and courtyard
-  const bodyW = PM_ROW_SPACING + 4; // extend past pads
-  const bodyH = halfH + 2;
+  // Board outline (F.SilkS): asymmetric in Y because pins are offset toward
+  // the USB edge — see ceoloide mcu_nice_nano.js silkscreen block.
+  const courtPad = 0.5;
+  const usbProtrude = MCU_USB.back - MCU_USB.front; // ~1.5mm
 
   return `  (footprint "keyboard-builder:ProMicro" (layer "F.Cu") (at ${x} ${y})
     (uuid "${uid()}")
-    (property "Reference" "U1" (at 0 ${-bodyH - 1.5} 0) (layer "F.SilkS")
+    (property "Reference" "U1" (at 0 ${top - 2} 0) (layer "F.SilkS")
       (effects (font (size 1 1) (thickness 0.15))))
-    (property "Value" "Pro Micro" (at 0 ${bodyH + 1.5} 0) (layer "F.Fab")
+    (property "Value" "Pro Micro" (at 0 ${bottom + 2} 0) (layer "F.Fab")
       (effects (font (size 1 1) (thickness 0.15))))
-    (fp_rect (start ${-bodyW} ${-bodyH}) (end ${bodyW} ${bodyH})
+    (fp_rect (start ${-halfW} ${top}) (end ${halfW} ${bottom})
       (stroke (width 0.12) (type solid)) (fill none) (layer "F.SilkS")
       (uuid "${uid()}"))
-    (fp_rect (start ${-(bodyW + 0.5)} ${-(bodyH + 0.5)}) (end ${bodyW + 0.5} ${bodyH + 0.5})
+    (fp_rect (start ${-(halfW + courtPad)} ${top - usbProtrude - courtPad}) (end ${halfW + courtPad} ${bottom + courtPad})
       (stroke (width 0.05) (type solid)) (fill none) (layer "F.CrtYd")
       (uuid "${uid()}"))
-    (fp_line (start ${-bodyW + 1} ${-bodyH}) (end ${-bodyW + 1} ${-bodyH + 3})
-      (stroke (width 0.2) (type solid)) (layer "F.SilkS")
+    ${''/* USB-C connector outline on Dwgs.User, mirrored from ceoloide */}
+    (fp_line (start ${MCU_USB.left} ${MCU_USB.back}) (end ${MCU_USB.left} ${MCU_USB.front})
+      (stroke (width 0.15) (type solid)) (layer "Dwgs.User")
       (uuid "${uid()}"))
-    (fp_line (start ${bodyW - 1} ${-bodyH}) (end ${bodyW - 1} ${-bodyH + 3})
-      (stroke (width 0.2) (type solid)) (layer "F.SilkS")
+    (fp_line (start ${MCU_USB.right} ${MCU_USB.back}) (end ${MCU_USB.right} ${MCU_USB.front})
+      (stroke (width 0.15) (type solid)) (layer "Dwgs.User")
       (uuid "${uid()}"))
-    (fp_line (start ${-bodyW + 1} ${-bodyH}) (end ${bodyW - 1} ${-bodyH})
-      (stroke (width 0.2) (type solid)) (layer "F.SilkS")
+    (fp_line (start ${MCU_USB.left} ${MCU_USB.front}) (end ${MCU_USB.right} ${MCU_USB.front})
+      (stroke (width 0.15) (type solid)) (layer "Dwgs.User")
       (uuid "${uid()}"))
+    ${''/* USB silkscreen indicator: bracket on the top edge marking the USB-C location */}
+    (fp_line (start ${MCU_USB.left} ${top}) (end ${MCU_USB.left} ${top + 1.2})
+      (stroke (width 0.15) (type solid)) (layer "F.SilkS")
+      (uuid "${uid()}"))
+    (fp_line (start ${MCU_USB.right} ${top}) (end ${MCU_USB.right} ${top + 1.2})
+      (stroke (width 0.15) (type solid)) (layer "F.SilkS")
+      (uuid "${uid()}"))
+    (fp_text user "USB" (at 0 ${top + 1.8}) (layer "F.SilkS")
+      (effects (font (size 0.7 0.7) (thickness 0.12)))
+      (uuid "${uid()}"))
+${labelLines.join('\n')}
 ${padLines.join('\n')}
   )`;
 }
@@ -297,11 +383,13 @@ function computeBoardOutline(
     }
   }
 
-  // Include Pro Micro area in outline
+  // Include Pro Micro area in outline (board is asymmetric in Y because
+  // pins offset toward the USB edge — see MCU_BOARD).
   if (pmPos) {
-    const pmHw = PM_ROW_SPACING + 4 + BOARD_MARGIN;
-    const pmHh = PM_HEIGHT / 2 + 2 + BOARD_MARGIN;
-    for (const [dx, dy] of [[-pmHw, -pmHh], [pmHw, -pmHh], [pmHw, pmHh], [-pmHw, pmHh]]) {
+    const pmHw = MCU_BOARD.halfW + BOARD_MARGIN;
+    const pmTop = MCU_BOARD.top - BOARD_MARGIN;
+    const pmBottom = MCU_BOARD.bottom + BOARD_MARGIN;
+    for (const [dx, dy] of [[-pmHw, pmTop], [pmHw, pmTop], [pmHw, pmBottom], [-pmHw, pmBottom]]) {
       points.push({ x: pmPos.x + dx, y: pmPos.y + dy });
     }
   }
@@ -452,7 +540,9 @@ export function exportKicadPcb(layout: Layout, matrixMap: MatrixMap): string {
     if (net) pinNets[pin] = net;
   }
 
-  // Place Pro Micro above the key area
+  // Place Pro Micro above the key area. The MCU origin is the geometric
+  // center of the board outline (per ceoloide), so offset by `-bottom` to
+  // put the bottom edge ~20mm above the keys.
   let pmX = 0, pmY = 0;
   if (placedKeys.length > 0) {
     let minX = Infinity, maxX = -Infinity, minY = Infinity;
@@ -462,7 +552,7 @@ export function exportKicadPcb(layout: Layout, matrixMap: MatrixMap): string {
       if (pk.yMm < minY) minY = pk.yMm;
     }
     pmX = r((minX + maxX) / 2);
-    pmY = r(minY - PM_HEIGHT / 2 - 20); // 20mm gap above keys
+    pmY = r(minY - 20 - MCU_BOARD.bottom);
   }
 
   // Build the PCB file

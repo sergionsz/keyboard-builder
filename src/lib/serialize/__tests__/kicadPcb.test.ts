@@ -120,7 +120,8 @@ describe('exportKicadPcb', () => {
     const pcb = exportKicadPcb(layout, matrix);
 
     // Switch is placed at the key center: (2 + 0.5) * 19.05 = 47.625mm.
-    expect(pcb).toContain('(at 47.625 47.625 15)');
+    // Rotation is negated for KiCad (app is Y-down CW, KiCad is math CCW).
+    expect(pcb).toContain('(at 47.625 47.625 -15)');
   });
 
   it('handles empty layout', () => {

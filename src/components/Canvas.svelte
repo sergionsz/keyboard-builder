@@ -20,6 +20,12 @@
   const MCU_H = 4;      // height in U
   const MCU_GAP = 2;    // gap between rightmost key and MCU
   const MCU_PIN_SPACING = MCU_H / 13; // spacing between pins on each side
+  // USB-C port silhouette at the top edge of the MCU body, in U.
+  // Proportions follow the ceoloide nice_nano spec: ~7.4mm wide port on a
+  // 17.78mm board, sticking ~1.5mm beyond the board edge.
+  const MCU_USB_W = 0.78;        // port width (U)
+  const MCU_USB_PROTRUDE = 0.18; // height of the port body sticking out above the board (U)
+  const MCU_USB_INSET = 0.32;    // depth of the port socket cavity into the body (U)
 
   // Build row and column wire paths for schematic mode
   let rowWires = $derived.by(() => {
@@ -1157,10 +1163,17 @@
           />
         {/each}
 
+        {@const mcuTopY = (mcuData.mcuY - MCU_H / 2) * SCALE}
+        {@const mcuBottomY = (mcuData.mcuY + MCU_H / 2) * SCALE}
+        {@const mcuMidX = mcuData.mcuX * SCALE}
+        {@const usbHalfW = (MCU_USB_W / 2) * SCALE}
+        {@const usbProtrude = MCU_USB_PROTRUDE * SCALE}
+        {@const usbInset = MCU_USB_INSET * SCALE}
+
         <!-- MCU body -->
         <rect
           x={mcuData.mcuLeftX * SCALE}
-          y={(mcuData.mcuY - MCU_H / 2) * SCALE}
+          y={mcuTopY}
           width={MCU_W * SCALE}
           height={MCU_H * SCALE}
           rx={S * 0.2}
@@ -1169,14 +1182,49 @@
           stroke-width={S * 0.07}
           pointer-events="none"
         />
-        <!-- MCU label -->
+        <!-- USB-C port: connector body protrudes above the top edge, the
+             socket cavity inside the body shows where the cable plugs in. -->
+        <rect
+          x={mcuMidX - usbHalfW}
+          y={mcuTopY - usbProtrude}
+          width={usbHalfW * 2}
+          height={usbProtrude + usbInset}
+          rx={S * 0.12}
+          fill="#3a3a3a"
+          stroke="#888"
+          stroke-width={S * 0.06}
+          pointer-events="none"
+        />
+        <!-- USB-C inner cavity (the slot you plug a cable into) -->
+        <rect
+          x={mcuMidX - usbHalfW * 0.7}
+          y={mcuTopY - usbProtrude * 0.5}
+          width={usbHalfW * 1.4}
+          height={usbProtrude * 0.5 + usbInset * 0.65}
+          rx={S * 0.08}
+          fill="#1a1a1a"
+          pointer-events="none"
+        />
+        <!-- USB-C label -->
         <text
-          x={mcuData.mcuX * SCALE}
-          y={(mcuData.mcuY - MCU_H / 2) * SCALE + S * 0.55}
+          x={mcuMidX}
+          y={mcuTopY + usbInset * 0.5}
+          text-anchor="middle"
+          dominant-baseline="middle"
+          fill="#999"
+          font-size={S * 0.22}
+          font-weight="600"
+          font-family="'JetBrains Mono', 'SF Mono', monospace"
+          pointer-events="none"
+        >USB-C</text>
+        <!-- MCU label (bottom of board) -->
+        <text
+          x={mcuMidX}
+          y={mcuBottomY - S * 0.55}
           text-anchor="middle"
           dominant-baseline="middle"
           fill="#888"
-          font-size={S * 0.5}
+          font-size={S * 0.42}
           font-weight="600"
           pointer-events="none"
         >Pro Micro</text>
@@ -1200,17 +1248,17 @@
             fill={pinColor}
             pointer-events="none"
           />
-          <!-- Pin label (inside MCU body) -->
+          <!-- Pin label (inside MCU body): "<num> <label>" e.g. "5 D1" -->
           <text
             x={px + (pin.side === 'left' ? 1 : -1) * S * 0.25}
             y={py}
             text-anchor={pin.side === 'left' ? 'start' : 'end'}
             dominant-baseline="middle"
-            fill={pin.net ? pinColor : '#555'}
-            font-size={S * 0.35}
+            fill={pin.net ? pinColor : '#888'}
+            font-size={S * 0.32}
             font-family="'JetBrains Mono', 'SF Mono', monospace"
             pointer-events="none"
-          >{pin.label}</text>
+          >{pin.side === 'left' ? `${pin.pin} ${pin.label}` : `${pin.label} ${pin.pin}`}</text>
           <!-- Net label (outside MCU body) -->
           {#if pin.net}
             <text
