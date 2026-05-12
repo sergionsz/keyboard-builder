@@ -9,11 +9,15 @@ const SWITCH_TYPE_BY_CODE: Record<number, SwitchType> = {
   0: 'mx',
   1: 'choc-v2',
   2: 'mx-low-profile',
+  3: 'gateron-mx',
+  4: 'gateron-low-profile',
 };
 const CODE_BY_SWITCH_TYPE: Record<SwitchType, number> = {
   'mx': 0,
   'choc-v2': 1,
   'mx-low-profile': 2,
+  'gateron-mx': 3,
+  'gateron-low-profile': 4,
 };
 
 // ── Binary format (v2) ─────────────────────────────────────────────

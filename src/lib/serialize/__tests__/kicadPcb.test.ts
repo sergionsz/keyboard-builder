@@ -72,9 +72,9 @@ describe('exportKicadPcb', () => {
     const pcb = exportKicadPcb(layout, matrix);
 
     // Two switches
-    expect((pcb.match(/footprint "keyboard-builder:SW_Cherry_MX"/g) || []).length).toBe(2);
+    expect((pcb.match(/footprint "keyboard-builder:switch_mx"/g) || []).length).toBe(2);
     // Two diodes
-    expect((pcb.match(/footprint "keyboard-builder:D_SOD-123"/g) || []).length).toBe(2);
+    expect((pcb.match(/footprint "keyboard-builder:diode_tht_sod123"/g) || []).length).toBe(2);
 
     // References
     expect(pcb).toContain('"SW1"');
@@ -129,7 +129,7 @@ describe('exportKicadPcb', () => {
     const pcb = exportKicadPcb(layout, {});
 
     expect(pcb).toContain('(kicad_pcb');
-    expect(pcb).not.toContain('SW_Cherry_MX');
+    expect(pcb).not.toContain('switch_mx');
   });
 
   it('emits Choc V2 footprint and 18mm pitch when switchType is choc-v2', () => {
@@ -139,23 +139,43 @@ describe('exportKicadPcb', () => {
     };
     const pcb = exportKicadPcb(layout, { A: { row: 0, col: 0 } });
 
-    expect(pcb).toContain('keyboard-builder:SW_Kailh_Choc_V2');
-    expect(pcb).not.toContain('keyboard-builder:SW_Cherry_MX');
+    expect(pcb).toContain('keyboard-builder:switch_choc_v1_v2');
+    expect(pcb).not.toContain('keyboard-builder:switch_mx');
     // Switch center: (2 + 0.5) * 18 = 45 (Choc) vs 47.625 (MX)
     expect(pcb).toContain('(at 45 9');
+  });
+
+  it('emits Gateron LP KS27/KS33 footprint with ceoloide solder-mode pin layout', () => {
+    const layout: Layout = {
+      ...makeLayout([makeKey({ label: 'A', x: 0, y: 0 })]),
+      switchType: 'gateron-low-profile',
+    };
+    const pcb = exportKicadPcb(layout, { A: { row: 0, col: 0 } });
+    const swSection = pcb.split('keyboard-builder:switch_gateron_ks27_ks33')[1].split('\n  )')[0];
+
+    expect(pcb).toContain('keyboard-builder:switch_gateron_ks27_ks33');
+    // With hotswap off, ceoloide's solder_back is used: smaller through-holes
+    // (1.25mm drill, 2.1mm pad) at the direct-solder pin positions.
+    expect(swSection).toContain('(pad "1" thru_hole circle (at -2.6 5.75) (size 2.1 2.1) (drill 1.25)');
+    expect(swSection).toContain('(pad "2" thru_hole circle (at 4.4 4.7) (size 2.1 2.1) (drill 1.25)');
+    // 5.1mm center boss for the Gateron LP body, larger than the MX 4mm.
+    expect(swSection).toContain('(at 0 0) (size 5.6 5.6) (drill 5.1)');
+    // No mounting peg drills (Gateron LP has no plate mount pegs).
+    const mountDrills = swSection.match(/\(pad "" np_thru_hole circle \(at -5\.08 0\)/g) ?? [];
+    expect(mountDrills.length).toBe(0);
   });
 
   it('defaults to Cherry MX footprint when switchType is unset', () => {
     const layout = makeLayout([makeKey({ label: 'A', x: 0, y: 0 })]);
     const pcb = exportKicadPcb(layout, { A: { row: 0, col: 0 } });
 
-    expect(pcb).toContain('keyboard-builder:SW_Cherry_MX');
+    expect(pcb).toContain('keyboard-builder:switch_mx');
   });
 
   it('omits hot-swap socket pads when hotswap is off', () => {
     const layout = makeLayout([makeKey({ label: 'A', x: 0, y: 0 })]);
     const pcb = exportKicadPcb(layout, { A: { row: 0, col: 0 } });
-    const swSection = pcb.split('keyboard-builder:SW_Cherry_MX')[1].split('\n  )')[0];
+    const swSection = pcb.split('keyboard-builder:switch_mx')[1].split('\n  )')[0];
     // No SMD pads should appear inside the switch footprint when hotswap is off
     expect(swSection).not.toContain('smd');
   });
@@ -166,13 +186,39 @@ describe('exportKicadPcb', () => {
       hotswap: true,
     };
     const pcb = exportKicadPcb(layout, { A: { row: 0, col: 0 } });
-    const swSection = pcb.split('keyboard-builder:SW_Cherry_MX')[1].split('\n  )')[0];
+    const swSection = pcb.split('keyboard-builder:switch_mx')[1].split('\n  )')[0];
 
     // Two SMD socket pads on B.Cu sharing nets with the switch through-holes
     const smdPads = swSection.match(/\(pad "[12]" smd /g) ?? [];
     expect(smdPads.length).toBe(2);
     expect(swSection).toContain('"B.Cu" "B.Paste" "B.Mask"');
     // Pad nets match the switch through-hole nets
+    expect(swSection).toContain('"ROW0"');
+    expect(swSection).toContain('NET_SW1_D1');
+  });
+
+  it('emits Gateron LP HS 2.0 hotswap socket on B.Cu with paste-aperture pads', () => {
+    const layout: Layout = {
+      ...makeLayout([makeKey({ label: 'A', x: 0, y: 0 })]),
+      switchType: 'gateron-low-profile',
+      hotswap: true,
+    };
+    const pcb = exportKicadPcb(layout, { A: { row: 0, col: 0 } });
+    const swSection = pcb.split('keyboard-builder:switch_gateron_ks27_ks33')[1].split('\n  )')[0];
+
+    // Gateron LP socket sits on the back so the user-facing F side stays clean.
+    // Two roundrect Cu-only pads on B.Cu carrying the row/bridge nets.
+    const cuPads = swSection.match(/\(pad "[12]" smd roundrect[\s\S]*?\(layers "B\.Cu"\)/g) ?? [];
+    expect(cuPads.length).toBe(2);
+    // Two empty-net paste/mask aperture pads on B, smaller than the Cu pad.
+    const pasteAperturePads = swSection.match(/\(pad "" smd roundrect[\s\S]*?\(layers "B\.Paste" "B\.Mask"\)/g) ?? [];
+    expect(pasteAperturePads.length).toBe(2);
+    // Silkscreen on B.SilkS.
+    expect(swSection).toContain('(layer "B.SilkS")');
+    // No socket pads should leak onto F.Cu/F.Paste/F.Mask/F.SilkS.
+    expect(swSection).not.toMatch(/smd roundrect[\s\S]*?\(layers "F\.Cu"\)/);
+    expect(swSection).not.toMatch(/smd roundrect[\s\S]*?\(layers "F\.Paste" "F\.Mask"\)/);
+    // Nets still match the switch through-holes.
     expect(swSection).toContain('"ROW0"');
     expect(swSection).toContain('NET_SW1_D1');
   });
@@ -189,10 +235,10 @@ describe('exportKicadPcb', () => {
     };
     const pcb = exportKicadPcb(layout, matrix);
 
-    expect(pcb).toContain('footprint "keyboard-builder:ProMicro"');
+    expect(pcb).toContain('footprint "keyboard-builder:mcu_nice_nano"');
     expect(pcb).toContain('"U1"');
     // Should have 24 pads for the Pro Micro
-    const proMicroSection = pcb.split('keyboard-builder:ProMicro')[1];
+    const proMicroSection = pcb.split('keyboard-builder:mcu_nice_nano')[1];
     const padCount = (proMicroSection.match(/\(pad "/g) || []).length;
     expect(padCount).toBe(24);
   });
@@ -212,7 +258,7 @@ describe('exportKicadPcb', () => {
     const pcb = exportKicadPcb(layout, matrix);
 
     // Pro Micro section should contain ROW and COL net assignments
-    const pmSection = pcb.split('keyboard-builder:ProMicro')[1].split('\n  )')[0];
+    const pmSection = pcb.split('keyboard-builder:mcu_nice_nano')[1].split('\n  )')[0];
     expect(pmSection).toContain('"ROW0"');
     expect(pmSection).toContain('"ROW1"');
     expect(pmSection).toContain('"COL0"');
@@ -234,7 +280,7 @@ describe('exportKicadPcb', () => {
       C: { row: 1, col: 0 },
     };
     const pcb = exportKicadPcb(layout, matrix);
-    const pmSection = pcb.split('keyboard-builder:ProMicro')[1] ?? '';
+    const pmSection = pcb.split('keyboard-builder:mcu_nice_nano')[1] ?? '';
 
     // Split into per-pad blocks (each starts with '(pad "')
     function getPadBlock(section: string, pin: string): string {
@@ -244,11 +290,11 @@ describe('exportKicadPcb', () => {
       return next === -1 ? section.slice(idx) : section.slice(idx, next);
     }
 
-    // Pin 7 should have no net
-    expect(getPadBlock(pmSection, '7')).not.toContain('"COL0"');
-
-    // Pin 20 should have COL0
-    expect(getPadBlock(pmSection, '20')).toContain('"COL0"');
+    // ceoloide pads number opposite to PRO_MICRO_PINS (ceoloide pad = 25 - our pin),
+    // so the same physical hole that we call "pin 7" is labeled pad "18" in output.
+    expect(getPadBlock(pmSection, '18')).not.toContain('"COL0"');
+    // Same translation: our pin 20 → ceoloide pad 5.
+    expect(getPadBlock(pmSection, '5')).toContain('"COL0"');
   });
 });
 
@@ -275,7 +321,7 @@ describe('pin assignment consistency', () => {
 
     // Check PCB: each resolved pin should have the correct net
     const pcb = exportKicadPcb(layout, matrix);
-    const pmPcb = pcb.split('keyboard-builder:ProMicro')[1] ?? '';
+    const pmPcb = pcb.split('keyboard-builder:mcu_nice_nano')[1] ?? '';
     function getPadBlock(section: string, pin: string): string {
       const idx = section.indexOf(`(pad "${pin}"`);
       if (idx === -1) return '';
@@ -283,7 +329,10 @@ describe('pin assignment consistency', () => {
       return next === -1 ? section.slice(idx) : section.slice(idx, next);
     }
     for (const [pin, net] of Object.entries(resolved)) {
-      expect(getPadBlock(pmPcb, pin)).toContain(`"${net}"`);
+      // Translate our pin number (chip-up view) to the ceoloide pad number
+      // (chip-down view) that ends up in the KiCad output.
+      const ceoloidePad = String(25 - Number(pin));
+      expect(getPadBlock(pmPcb, ceoloidePad)).toContain(`"${net}"`);
     }
 
     // Check schematic: each resolved net should appear as a label near the Pro Micro
