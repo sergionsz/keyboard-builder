@@ -1,9 +1,10 @@
 <script lang="ts">
   import { layout, setPlates, pushUndoExported, updateLayoutField, resetScrewsToAuto } from '../stores/layout';
   import { plateKeyDisplay, type PlateKeyDisplay } from '../stores/editor';
-  import { generatePlateOutlines, simplifyRing } from '../lib/plate';
+  import { generatePlateOutlines, simplifyRing, reversibleSourceKeys } from '../lib/plate';
 
   let cornerRadius = $derived($layout.plateCornerRadius);
+  let padding = $derived($layout.platePadding ?? 6);
   let hasManualScrews = $derived($layout.plates.some((p) => p.screws !== undefined));
   let stabilizersEnabled = $derived($layout.stabilizers !== false);
 
@@ -11,6 +12,12 @@
     const val = parseFloat((e.currentTarget as HTMLInputElement).value);
     pushUndoExported();
     updateLayoutField('plateCornerRadius', isNaN(val) || val < 0 ? 0 : val);
+  }
+
+  function onPaddingInput(e: Event) {
+    const val = parseFloat((e.currentTarget as HTMLInputElement).value);
+    pushUndoExported();
+    updateLayoutField('platePadding', isNaN(val) || val < 0 ? 0 : val);
   }
 
   function onStabilizersChange(e: Event) {
@@ -21,7 +28,11 @@
 
   function regenerate() {
     if ($layout.keys.length === 0) return;
-    const result = generatePlateOutlines($layout.keys, undefined, $layout.switchType);
+    // In reversible mode, collapse the right-half keys onto the left so the
+    // canonical outline contains every switch + stabilizer footprint on
+    // either side. The right plate is a render-time mirror of this outline.
+    const sourceKeys = reversibleSourceKeys($layout);
+    const result = generatePlateOutlines(sourceKeys, $layout.platePadding, $layout.switchType);
     setPlates(result.plates.map((verts) => ({ vertices: verts })));
   }
 
@@ -80,6 +91,18 @@
 
   <div class="stats">
     {plateCount} plate{plateCount !== 1 ? 's' : ''}, {vertexCount} vertices
+  </div>
+
+  <div class="field">
+    <label for="plate-padding">Key Padding (mm)</label>
+    <input
+      id="plate-padding"
+      type="number"
+      step="0.5"
+      min="0"
+      value={padding}
+      oninput={onPaddingInput}
+    />
   </div>
 
   <div class="field">

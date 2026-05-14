@@ -39,7 +39,7 @@ function parseFacets(stl: string): Array<{ nx: number; ny: number; nz: number; v
 
 describe('exportPlateStl', () => {
   it('returns a valid ASCII STL header/footer', () => {
-    const key = { id: 'k1', x: 0, y: 0, rotation: 0, width: 1, height: 1, label: '' };
+    const key = { id: 'k1', x: 0, y: 0, rotation: 0, width: 1, height: 1, label: 'K' };
     const { plates } = generatePlateOutlines([key]);
     const layout = baseLayout({
       keys: [key],
@@ -51,7 +51,7 @@ describe('exportPlateStl', () => {
   });
 
   it('places both plates flat on the same Z plane', () => {
-    const key = { id: 'k1', x: 0, y: 0, rotation: 0, width: 1, height: 1, label: '' };
+    const key = { id: 'k1', x: 0, y: 0, rotation: 0, width: 1, height: 1, label: 'K' };
     const { plates } = generatePlateOutlines([key]);
     const layout = baseLayout({
       keys: [key],
@@ -67,7 +67,7 @@ describe('exportPlateStl', () => {
   });
 
   it('places the bottom plate offset in Y so it does not overlap the top', () => {
-    const key = { id: 'k1', x: 0, y: 0, rotation: 0, width: 1, height: 1, label: '' };
+    const key = { id: 'k1', x: 0, y: 0, rotation: 0, width: 1, height: 1, label: 'K' };
     const { plates } = generatePlateOutlines([key]);
     const layout = baseLayout({
       keys: [key],
@@ -88,7 +88,7 @@ describe('exportPlateStl', () => {
   });
 
   it('top plate has switch cutouts; bottom plate does not', () => {
-    const key = { id: 'k1', x: 0, y: 0, rotation: 0, width: 1, height: 1, label: '' };
+    const key = { id: 'k1', x: 0, y: 0, rotation: 0, width: 1, height: 1, label: 'K' };
     const { plates } = generatePlateOutlines([key]);
     const layout = baseLayout({
       keys: [key],
@@ -118,7 +118,7 @@ describe('exportPlateStl', () => {
   });
 
   it('top-face normals point +Z and bottom-face normals point -Z', () => {
-    const key = { id: 'k1', x: 0, y: 0, rotation: 0, width: 1, height: 1, label: '' };
+    const key = { id: 'k1', x: 0, y: 0, rotation: 0, width: 1, height: 1, label: 'K' };
     const { plates } = generatePlateOutlines([key]);
     const layout = baseLayout({
       keys: [key],
@@ -153,7 +153,7 @@ describe('exportPlateStl', () => {
   });
 
   it('omits stabilizer cutouts when layout.stabilizers is false', () => {
-    const wide = { id: 'space', x: 0, y: 0, rotation: 0, width: 6.25, height: 1, label: '' };
+    const wide = { id: 'space', x: 0, y: 0, rotation: 0, width: 6.25, height: 1, label: 'K' };
     const { plates } = generatePlateOutlines([wide]);
     const layoutOn = baseLayout({
       keys: [wide],
@@ -174,7 +174,7 @@ describe('exportPlateStl', () => {
 
 describe('exportPlateStl with manual screws', () => {
   it('uses plate.screws verbatim when defined', () => {
-    const key = { id: 'k1', x: 0, y: 0, rotation: 0, width: 1, height: 1, label: '' };
+    const key = { id: 'k1', x: 0, y: 0, rotation: 0, width: 1, height: 1, label: 'K' };
     const { plates } = generatePlateOutlines([key]);
     const layout = baseLayout({
       keys: [key],
@@ -204,7 +204,7 @@ describe('exportPlateStl with manual screws', () => {
   });
 
   it('renders no screws when plate.screws is an empty array', () => {
-    const key = { id: 'k1', x: 0, y: 0, rotation: 0, width: 1, height: 1, label: '' };
+    const key = { id: 'k1', x: 0, y: 0, rotation: 0, width: 1, height: 1, label: 'K' };
     const { plates } = generatePlateOutlines([key]);
     const layoutWithScrews = baseLayout({
       keys: [key],
@@ -224,7 +224,7 @@ describe('exportPlateStl with manual screws', () => {
 
 describe('exportPlateStl with non-MX switch types', () => {
   it('uses Choc V2 pitch (18mm) when switchType is choc-v2', () => {
-    const key = { id: 'k1', x: 0, y: 0, rotation: 0, width: 1, height: 1, label: '' };
+    const key = { id: 'k1', x: 0, y: 0, rotation: 0, width: 1, height: 1, label: 'K' };
     const { plates: mxPlates } = generatePlateOutlines([key], 6, 'mx');
     const { plates: chocPlates } = generatePlateOutlines([key], 6, 'choc-v2');
 
@@ -253,7 +253,7 @@ describe('exportPlateStl with non-MX switch types', () => {
   });
 
   it('uses Choc plate thickness (1.2mm) when switchType is choc-v2', () => {
-    const key = { id: 'k1', x: 0, y: 0, rotation: 0, width: 1, height: 1, label: '' };
+    const key = { id: 'k1', x: 0, y: 0, rotation: 0, width: 1, height: 1, label: 'K' };
     const { plates } = generatePlateOutlines([key], 6, 'choc-v2');
     const layout = baseLayout({
       keys: [key],
@@ -271,7 +271,7 @@ describe('screwHoleCenters', () => {
     const keys: Key[] = [];
     for (let r = 0; r < 5; r++) {
       for (let c = 0; c < 14; c++) {
-        keys.push({ id: `k${r}_${c}`, x: c, y: r, rotation: 0, width: 1, height: 1, label: '' });
+        keys.push({ id: `k${r}_${c}`, x: c, y: r, rotation: 0, width: 1, height: 1, label: 'K' });
       }
     }
     const { plates } = generatePlateOutlines(keys);
@@ -309,7 +309,7 @@ describe('screwHoleCenters', () => {
     const keys: Key[] = [];
     for (let r = 0; r < 5; r++) {
       for (let c = 0; c < 14; c++) {
-        keys.push({ id: `k${r}_${c}`, x: c, y: r, rotation: 0, width: 1, height: 1, label: '' });
+        keys.push({ id: `k${r}_${c}`, x: c, y: r, rotation: 0, width: 1, height: 1, label: 'K' });
       }
     }
     const { plates } = generatePlateOutlines(keys);

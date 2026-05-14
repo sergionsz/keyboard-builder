@@ -37,6 +37,107 @@ function rotateAround(px: number, py: number, cx: number, cy: number, deg: numbe
   return [cx + dx * cos - dy * sin, cy + dx * sin + dy * cos];
 }
 
+/**
+ * Determine which split half a plate belongs to (L or R) based on whether
+ * its centroid sits left or right of the mirror axis. Only meaningful when
+ * `layout.reversible` is true; otherwise returns undefined.
+ */
+export function platesSide(
+  outlineU: { x: number; y: number }[],
+  mirrorAxisX: number,
+): 'L' | 'R' {
+  let sumX = 0;
+  for (const v of outlineU) sumX += v.x;
+  const cx = sumX / outlineU.length;
+  return cx < mirrorAxisX ? 'L' : 'R';
+}
+
+/**
+ * Whether a key's switch cutout should be carved on the plate for the given
+ * side. Returns true when the layout is non-reversible, or when the key's
+ * `sides` array includes the plate's side (defaulting to both sides).
+ */
+export function keyRendersOnSide(key: Key, side: 'L' | 'R'): boolean {
+  if (!key.sides) return true;
+  return key.sides.includes(side);
+}
+
+/**
+ * Whether a key represents a real switch position (vs. a placeholder).
+ * Keys with empty (or whitespace-only) labels are treated as phantom keys
+ * that don't get a plate cutout — useful for blocking out a layout shape
+ * without committing to a hole.
+ */
+export function keyRendersOnPlate(key: Key): boolean {
+  return key.label.trim().length > 0;
+}
+
+/**
+ * Switch + stabilizer cutouts that should be physically carved into a
+ * plate — only the real keys that render on the plate's own side.
+ */
+export function plateSwitchCutouts(
+  layout: Layout,
+  outerMm: P2[],
+  plateSide: 'L' | 'R' | undefined,
+  geometry: SwitchGeometry,
+): P2[][] {
+  const mmPerU = geometry.mmPerU;
+  const cutouts: P2[][] = [];
+  for (const key of layout.keys) {
+    if (!keyRendersOnPlate(key)) continue;
+    if (plateSide && !keyRendersOnSide(key, plateSide)) continue;
+    const kcx = (key.x + key.width / 2) * mmPerU;
+    const kcy = (key.y + key.height / 2) * mmPerU;
+    if (!pointInRing(kcx, kcy, outerMm)) continue;
+    cutouts.push(switchCutoutRing(key, geometry));
+    if (layout.stabilizers !== false) {
+      cutouts.push(...stabilizerCutoutRings(key, geometry));
+    }
+  }
+  return cutouts;
+}
+
+/**
+ * Obstacle rings for screw placement on a plate. In reversible mode the
+ * same physical board serves both halves (flipped for the second), so
+ * screw positions must clear switches in either orientation: own-side
+ * cutouts plus the mirrored projection of the opposite half's switches.
+ */
+export function plateScrewObstacles(
+  layout: Layout,
+  outerMm: P2[],
+  plateSide: 'L' | 'R' | undefined,
+  geometry: SwitchGeometry,
+): P2[][] {
+  const obstacles = plateSwitchCutouts(layout, outerMm, plateSide, geometry);
+  if (!layout.reversible || !plateSide) return obstacles;
+  const mmPerU = geometry.mmPerU;
+  const axisX = layout.mirrorAxisX;
+  const oppositeSide: 'L' | 'R' = plateSide === 'L' ? 'R' : 'L';
+  for (const key of layout.keys) {
+    if (!keyRendersOnPlate(key)) continue;
+    if (!keyRendersOnSide(key, oppositeSide)) continue;
+    const cxOrig = key.x + key.width / 2;
+    const onPlateSideOriginally =
+      plateSide === 'L' ? cxOrig < axisX : cxOrig >= axisX;
+    if (onPlateSideOriginally) continue;
+    const mirrored: Key = {
+      ...key,
+      x: axisX * 2 - key.x - key.width,
+      rotation: -key.rotation,
+    };
+    const mcx = (mirrored.x + mirrored.width / 2) * mmPerU;
+    const mcy = (mirrored.y + mirrored.height / 2) * mmPerU;
+    if (!pointInRing(mcx, mcy, outerMm)) continue;
+    obstacles.push(switchCutoutRing(mirrored, geometry));
+    if (layout.stabilizers !== false) {
+      obstacles.push(...stabilizerCutoutRings(mirrored, geometry));
+    }
+  }
+  return obstacles;
+}
+
 /** Square hole ring for a single switch, in mm (canvas coords). */
 export function switchCutoutRing(key: Key, geometry: SwitchGeometry = MX): P2[] {
   const cx = (key.x + key.width / 2) * geometry.mmPerU;
@@ -183,18 +284,11 @@ export function resolvePlateScrewsU(
       ? filletPolygon(plate.vertices, layout.plateCornerRadius, undefined, mmPerU)
       : plate.vertices;
   const outerMm: P2[] = outlineU.map((v) => [v.x * mmPerU, v.y * mmPerU]);
+  const plateSide = layout.reversible
+    ? platesSide(outlineU, layout.mirrorAxisX)
+    : undefined;
 
-  const switchHoles: P2[][] = [];
-  for (const key of layout.keys) {
-    const kcx = (key.x + key.width / 2) * mmPerU;
-    const kcy = (key.y + key.height / 2) * mmPerU;
-    if (pointInRing(kcx, kcy, outerMm)) {
-      switchHoles.push(switchCutoutRing(key, geometry));
-      if (layout.stabilizers !== false) {
-        switchHoles.push(...stabilizerCutoutRings(key, geometry));
-      }
-    }
-  }
+  const switchHoles = plateScrewObstacles(layout, outerMm, plateSide, geometry);
 
   return screwHoleCenters(outerMm, switchHoles).map(([x, y]) => ({
     x: x / mmPerU,
@@ -221,17 +315,10 @@ export function isValidPlateScrewU(
       ? filletPolygon(plate.vertices, layout.plateCornerRadius, undefined, mmPerU)
       : plate.vertices;
   const outerMm: P2[] = outlineU.map((v) => [v.x * mmPerU, v.y * mmPerU]);
-  const switchHoles: P2[][] = [];
-  for (const key of layout.keys) {
-    const kcx = (key.x + key.width / 2) * mmPerU;
-    const kcy = (key.y + key.height / 2) * mmPerU;
-    if (pointInRing(kcx, kcy, outerMm)) {
-      switchHoles.push(switchCutoutRing(key, geometry));
-      if (layout.stabilizers !== false) {
-        switchHoles.push(...stabilizerCutoutRings(key, geometry));
-      }
-    }
-  }
+  const plateSide = layout.reversible
+    ? platesSide(outlineU, layout.mirrorAxisX)
+    : undefined;
+  const switchHoles = plateScrewObstacles(layout, outerMm, plateSide, geometry);
   return isValidScrewPos(pos.x * mmPerU, pos.y * mmPerU, outerMm, switchHoles);
 }
 
@@ -445,29 +532,39 @@ export function exportPlateStl(layout: Layout): string {
   let bboxMaxY = -Infinity;
   let bboxMinY = Infinity;
 
-  for (const plate of layout.plates) {
-    if (plate.vertices.length < 3) continue;
+  // Reversible mode emits BOTH halves. The user stores only the left
+  // (canonical) plate; the right plate is a render-time mirror that
+  // matches the PCB's reversible design but carves a different set of
+  // switch cutouts because each half's empty-key placement is
+  // independent.
+  const sourcePlates = layout.reversible
+    ? layout.plates.filter((p) => {
+        if (p.vertices.length === 0) return false;
+        const cx = p.vertices.reduce((s, v) => s + v.x, 0) / p.vertices.length;
+        return cx < layout.mirrorAxisX;
+      })
+    : layout.plates;
+
+  function preparePlate(plate: { vertices: { x: number; y: number }[]; screws?: { x: number; y: number }[] }, plateSide: 'L' | 'R' | undefined) {
+    if (plate.vertices.length < 3) return;
     const outlineU =
       layout.plateCornerRadius > 0
         ? filletPolygon(plate.vertices, layout.plateCornerRadius, undefined, mmPerU)
         : plate.vertices;
     const outerMm: P2[] = outlineU.map((v) => [v.x * mmPerU, v.y * mmPerU]);
 
-    const switchHoles: P2[][] = [];
-    for (const key of layout.keys) {
-      const kcx = (key.x + key.width / 2) * mmPerU;
-      const kcy = (key.y + key.height / 2) * mmPerU;
-      if (pointInRing(kcx, kcy, outerMm)) {
-        switchHoles.push(switchCutoutRing(key, geometry));
-        if (layout.stabilizers !== false) {
-          switchHoles.push(...stabilizerCutoutRings(key, geometry));
-        }
-      }
-    }
+    // Carved cutouts come from THIS plate's side only — each half's
+    // empty-key configuration is independent, so the mirrored half can
+    // carve a different set of holes.
+    const switchHoles = plateSwitchCutouts(layout, outerMm, plateSide, geometry);
+    // Screw obstacles also consider the mirrored opposite-half keys so the
+    // same physical screw position works on either half when the fab is
+    // flipped.
+    const screwObstacles = plateScrewObstacles(layout, outerMm, plateSide, geometry);
 
     const screwCenters: P2[] = plate.screws
       ? plate.screws.map((s) => [s.x * mmPerU, s.y * mmPerU])
-      : screwHoleCenters(outerMm, switchHoles);
+      : screwHoleCenters(outerMm, screwObstacles);
     const screwRings: P2[][] = screwCenters.map(([cx, cy]) =>
       circleRing(cx, cy, SCREW_HOLE_DIAMETER / 2),
     );
@@ -478,6 +575,23 @@ export function exportPlateStl(layout: Layout): string {
     }
 
     prepared.push({ outerMm, switchHoles, screwRings });
+  }
+
+  for (const plate of sourcePlates) {
+    const plateSide = layout.reversible ? 'L' : undefined;
+    preparePlate(plate, plateSide);
+
+    if (layout.reversible) {
+      // Synthesize the mirrored right half. Outline is the mirror of the
+      // canonical plate; manual screws (if any) mirror across the axis;
+      // cutouts and obstacles are computed from the right-half keys.
+      const axisX = layout.mirrorAxisX;
+      const mirroredPlate = {
+        vertices: plate.vertices.map((v) => ({ x: axisX * 2 - v.x, y: v.y })).reverse(),
+        screws: plate.screws?.map((s) => ({ x: axisX * 2 - s.x, y: s.y })),
+      };
+      preparePlate(mirroredPlate, 'R');
+    }
   }
 
   // Y offset that places the bottom plates below all top plates with a gap

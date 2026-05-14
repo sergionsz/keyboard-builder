@@ -1,6 +1,6 @@
 import polygonClipping from 'polygon-clipping';
-import type { Ring, MultiPolygon } from 'polygon-clipping';
-import type { Key, SwitchType } from '../types';
+import type { Pair, Ring, MultiPolygon } from 'polygon-clipping';
+import type { Key, Layout, PlateOutline, SwitchType } from '../types';
 import { getSwitchGeometry } from './switchGeometry';
 
 const MX_MM_PER_U = getSwitchGeometry(undefined).mmPerU;
@@ -133,6 +133,25 @@ export function simplifyRing(
 }
 
 /**
+ * Build the input key set for plate-outline generation. In reversible mode
+ * every key is collapsed onto the LEFT half: left-half keys stay put;
+ * right-half keys are mirrored across the axis (with size and rotation
+ * mirrored, since size-unsynced pairs can differ between halves). The
+ * resulting padded-rect union then encompasses every switch + stabilizer
+ * footprint on either side, so the mirrored right plate still contains
+ * its own larger cutouts.
+ */
+export function reversibleSourceKeys(layout: Layout): Key[] {
+  if (!layout.reversible) return layout.keys;
+  const axisX = layout.mirrorAxisX;
+  return layout.keys.map((k) => {
+    const cx = k.x + k.width / 2;
+    if (cx < axisX) return k;
+    return { ...k, x: axisX * 2 - k.x - k.width, rotation: -k.rotation };
+  });
+}
+
+/**
  * Generate plate outlines from a set of keys.
  *
  * Computes the union of padded rectangles around each key, then simplifies
@@ -166,10 +185,74 @@ export function generatePlateOutlines(
       x: x / mmPerU,
       y: y / mmPerU,
     }));
-    return simplifyRing(inU);
+    // Merge near-coincident vertices (≤ 0.05U ≈ 1mm in MX) so adjacent
+    // corners aren't degenerate. Without this, the rect-union output often
+    // leaves tiny edges that force `filletPolygon` to clamp its tangent
+    // length to near-zero, producing invisible fillets on those corners.
+    return simplifyRing(inU, 1, 0.05);
   });
 
   return { plates };
+}
+
+function pointInClosedRing(p: { x: number; y: number }, ring: Pair[]): boolean {
+  let inside = false;
+  for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) {
+    const [xi, yi] = ring[i];
+    const [xj, yj] = ring[j];
+    const hit = (yi > p.y) !== (yj > p.y) && p.x < ((xj - xi) * (p.y - yi)) / (yj - yi) + xi;
+    if (hit) inside = !inside;
+  }
+  return inside;
+}
+
+/**
+ * Union any plate outlines whose polygons currently overlap. Returns the
+ * new plates array when at least one merge happens, or `null` when every
+ * plate stays disjoint (so callers can short-circuit without committing).
+ *
+ * Manual screw lists carry over: each merged polygon keeps the screws that
+ * fall inside it. If none of the source plates had manual screws, the
+ * merged result also has none (auto-placement at export time).
+ */
+export function mergeOverlappingPlates(plates: PlateOutline[]): PlateOutline[] | null {
+  const valid = plates.filter((p) => p.vertices.length >= 3);
+  if (valid.length < 2) return null;
+
+  const closeRing = (verts: { x: number; y: number }[]): Pair[] => {
+    const r = verts.map((v) => [v.x, v.y] as Pair);
+    if (r.length > 0) r.push([r[0][0], r[0][1]]);
+    return r;
+  };
+
+  const polys = valid.map((p) => [closeRing(p.vertices)]);
+  const merged: MultiPolygon = polygonClipping.union(polys[0], ...polys.slice(1));
+
+  if (merged.length >= valid.length) return null;
+
+  // Carry manual screws over. If no plate had manual screws, none of the
+  // merged plates get any either (let auto-placement run again).
+  let anyHasManual = false;
+  const allScrews: { x: number; y: number }[] = [];
+  for (const p of plates) {
+    if (p.screws !== undefined) {
+      anyHasManual = true;
+      for (const s of p.screws) allScrews.push({ ...s });
+    }
+  }
+
+  return merged.map((polygon) => {
+    const outerRing = polygon[0];
+    const open = outerRing.slice(0, -1);
+    const vertices = simplifyRing(
+      open.map(([x, y]) => ({ x, y })),
+      1,
+      0.05,
+    );
+    if (!anyHasManual) return { vertices };
+    const screws = allScrews.filter((s) => pointInClosedRing(s, outerRing));
+    return { vertices, screws };
+  });
 }
 
 /**
@@ -223,8 +306,10 @@ export function filletPolygon(
     const dot = uAx * uBx + uAy * uBy;
     const halfAngle = Math.acos(Math.max(-1, Math.min(1, dot))) / 2;
 
-    if (halfAngle < 1e-6 || Math.abs(halfAngle - Math.PI / 2) < 1e-6 && dot > 0.999) {
-      // Nearly collinear or zero-angle corner; skip filleting
+    if (halfAngle < 1e-6 || Math.abs(halfAngle - Math.PI / 2) < 1e-3) {
+      // Zero-angle spike (dot ≈ +1) or near-straight 180° corner (dot ≈ -1):
+      // either way there's no real turn to round, and the tan() math goes
+      // unstable. Skip filleting and keep the vertex as-is.
       result.push(curr);
       continue;
     }

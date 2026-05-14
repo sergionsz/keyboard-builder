@@ -2,6 +2,7 @@ import { writable, derived } from 'svelte/store';
 import { layout, pushUndoExported, updateLayoutField } from './layout';
 import { autoAssignMatrix, findDuplicates, type MatrixMap } from '../lib/matrix';
 import { assignPinsToMatrix, applyPinOverrides } from '../lib/serialize/proMicro';
+import type { Key, Layout } from '../types';
 
 export type EditorMode = 'layout' | 'schematic' | 'plate';
 export type SchematicFocus = 'rows' | 'cols';
@@ -9,10 +10,29 @@ export type SchematicFocus = 'rows' | 'cols';
 export const editorMode = writable<EditorMode>('layout');
 export const schematicFocus = writable<SchematicFocus>('rows');
 
-/** The computed matrix: auto-assigned, then overrides applied */
+/**
+ * Keys included in the schematic / PCB matrix. In reversible mode both
+ * halves of the keyboard share a single PCB design, so the schematic only
+ * needs to depict the left half — right-half keys are filtered out (the
+ * physical right half is the same fab flipped over).
+ */
+export function schematicVisibleKeys(l: Layout): Key[] {
+  if (!l.reversible) return l.keys;
+  return l.keys.filter((k) => k.x + k.width / 2 < l.mirrorAxisX);
+}
+
+/** The computed matrix: auto-assigned over visible keys, then overrides applied */
 export const matrix = derived(layout, ($layout) => {
-  const auto = autoAssignMatrix($layout.keys);
-  return { ...auto, ...$layout.matrixOverrides };
+  const visible = schematicVisibleKeys($layout);
+  const auto = autoAssignMatrix(visible);
+  // Only apply overrides for keys actually included in the visible set so
+  // hidden right-half overrides don't bloat the matrix.
+  const overrides: MatrixMap = {};
+  const visibleIds = new Set(visible.map((k) => k.id));
+  for (const [id, cell] of Object.entries($layout.matrixOverrides)) {
+    if (visibleIds.has(id)) overrides[id] = cell;
+  }
+  return { ...auto, ...overrides };
 });
 
 /** Derived: duplicate (row,col) assignments */
@@ -37,7 +57,7 @@ export function setKeyMatrix(keyId: string, row: number, col: number) {
 export const pinAssignments = derived([matrix, layout], ([$matrix, $layout]) => {
   const rowSet = new Set<number>();
   const colSet = new Set<number>();
-  for (const key of $layout.keys) {
+  for (const key of schematicVisibleKeys($layout)) {
     const cell = $matrix[key.id];
     if (cell) { rowSet.add(cell.row); colSet.add(cell.col); }
   }
