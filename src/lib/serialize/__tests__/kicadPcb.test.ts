@@ -1,6 +1,5 @@
 import { describe, it, expect } from 'vitest';
 import { exportKicadPcb } from '../kicadPcb';
-import { exportKicadSch } from '../kicad';
 import { assignPinsToMatrix, applyPinOverrides } from '../proMicro';
 import type { Layout, Key } from '../../../types';
 
@@ -335,20 +334,6 @@ describe('pin assignment consistency', () => {
       expect(getPadBlock(pmPcb, ceoloidePad)).toContain(`"${net}"`);
     }
 
-    // Check schematic: each resolved net should appear as a label near the Pro Micro
-    const sch = exportKicadSch(layout, matrix);
-    const schLabels = sch.split('\n')
-      .filter(l => l.trim().startsWith('(label '))
-      .map(l => {
-        const m = l.match(/label "([^"]+)"/);
-        return m ? m[1] : '';
-      });
-    for (const net of Object.values(resolved)) {
-      // Net should appear at least twice: once on matrix side, once on PM side
-      const count = schLabels.filter(l => l === net).length;
-      expect(count).toBeGreaterThanOrEqual(2);
-    }
-
     // Pin 7 should be unassigned: no COL0 label at pin 7's position
     expect(resolved[7]).toBeUndefined();
   });
@@ -423,6 +408,34 @@ describe('pin assignment consistency', () => {
     // Coordinates: 0.5 * 19.05 = 9.525, 1.5 * 19.05 = 28.575
     expect(pcb).toContain('(at 9.525 9.525)');
     expect(pcb).toContain('(at 28.575 28.575)');
+  });
+
+  it('reversible mode emits only the left half plus power circuitry', () => {
+    const keys = [
+      makeKey({ id: 'L', label: 'L', x: 0, y: 0 }),
+      makeKey({ id: 'R', label: 'R', x: 4, y: 0 }),
+    ];
+    const layout: Layout = {
+      ...makeLayout(keys),
+      mirrorPairs: { L: 'R', R: 'L' },
+      mirrorAxisX: 2.5,
+      reversible: true,
+    };
+    const pcb = exportKicadPcb(layout, { L: { row: 0, col: 0 }, R: { row: 0, col: 1 } });
+
+    // Only one switch (the left half) survives the half-filter.
+    expect((pcb.match(/footprint "keyboard-builder:switch_mx"/g) ?? []).length).toBe(1);
+    // Power circuitry footprints are added.
+    expect(pcb).toContain('battery_jst_ph_2');
+    expect(pcb).toContain('slide_switch_spdt');
+    expect(pcb).toContain('button_reset_6mm');
+    // Reversible-mode switch has hotswap pads on BOTH F.Cu and B.Cu so a
+    // flipped board still has a socket facing down.
+    // (Hotswap defaults to off, so check the chevron silk that ceoloide
+    // emits in reversible mode regardless of hotswap setting.)
+    expect(pcb).toContain('BAT+');
+    expect(pcb).toContain('"RAW"');
+    expect(pcb).toContain('"GND"');
   });
 
   it('emits no mounting holes when plate.screws is an empty array', () => {

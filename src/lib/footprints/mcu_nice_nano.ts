@@ -494,31 +494,53 @@ function instructions(p: NiceNanoParams, ctx: NiceNanoContext): string {
 function genTraces(p: NiceNanoParams, ctx: NiceNanoContext): string {
   // ceoloide emits 12 rows of route segments; the via positions follow the
   // jumper geometry. We honor `only_required_jumpers` (top 4 rows only).
+  //
+  // ceoloide's segments are in *footprint-local* coordinates because in
+  // ergogen the parent footprint frame transforms them. We're emitting the
+  // `(segment …)` blocks at top level (board coordinates), so we have to
+  // translate them by the footprint's placement ourselves — otherwise the
+  // jumper traces float in space and don't connect to the pads.
   const rows: string[] = [];
   const limit = p.only_required_jumpers ? 4 : 12;
   for (let i = 0; i < limit; i++) {
-    rows.push(genTracesRow(i, p));
+    rows.push(genTracesRow(i, p, ctx));
   }
   return rows.join('\n');
 }
 
-function genTracesRow(rowNum: number, p: NiceNanoParams): string {
+function genTracesRow(rowNum: number, p: NiceNanoParams, ctx: NiceNanoContext): string {
   const y = -12.7 + rowNum * 2.54;
   const inner = p.use_rectangular_jumpers ? 4.58 : 4.775;
-  return `  (segment (start ${inner} ${y}) (end 3.4 ${y}) (width 0.25) (layer "F.Cu"))
-  (segment (start -${inner} ${y}) (end -3.4 ${y}) (width 0.25) (layer "F.Cu"))
-  (segment (start -7.62 ${y}) (end -5.5 ${y}) (width 0.25) (layer "F.Cu"))
-  (segment (start -7.62 ${y}) (end -5.5 ${y}) (width 0.25) (layer "B.Cu"))
-  (segment (start 5.5 ${y}) (end 7.62 ${y}) (width 0.25) (layer "F.Cu"))
-  (segment (start 7.62 ${y}) (end 5.5 ${y}) (width 0.25) (layer "B.Cu"))
-  (segment (start -2.604695 ${0.23 + y}) (end 3.17 ${0.23 + y}) (width 0.25) (layer "B.Cu"))
-  (segment (start -4.775 ${y}) (end -4.425305 ${y}) (width 0.25) (layer "B.Cu"))
-  (segment (start -3.700305 ${0.725 + y}) (end -3.099695 ${0.725 + y}) (width 0.25) (layer "B.Cu"))
-  (segment (start -4.425305 ${y}) (end -3.700305 ${0.725 + y}) (width 0.25) (layer "B.Cu"))
-  (segment (start -3.099695 ${0.725 + y}) (end -2.604695 ${0.23 + y}) (width 0.25) (layer "B.Cu"))
-  (segment (start 4.775 ${y}) (end 4.425305 ${y}) (width 0.25) (layer "B.Cu"))
-  (segment (start 2.594695 ${-0.22 + y}) (end -3.18 ${-0.22 + y}) (width 0.25) (layer "B.Cu"))
-  (segment (start 4.425305 ${y}) (end 3.700305 ${-0.725 + y}) (width 0.25) (layer "B.Cu"))
-  (segment (start 3.700305 ${-0.725 + y}) (end 3.099695 ${-0.725 + y}) (width 0.25) (layer "B.Cu"))
-  (segment (start 3.099695 ${-0.725 + y}) (end 2.594695 ${-0.22 + y}) (width 0.25) (layer "B.Cu"))`;
+  // Rotation in app convention is Y-down, +CW; KiCad's (at) clause is math
+  // CCW, so we use -ctx.rotation when projecting.
+  const rad = (-ctx.rotation * Math.PI) / 180;
+  const cos = Math.cos(rad);
+  const sin = Math.sin(rad);
+  const ox = ctx.position.x;
+  const oy = ctx.position.y;
+  const seg = (sx: number, sy: number, ex: number, ey: number, layer: string): string => {
+    const sxR = ox + sx * cos - sy * sin;
+    const syR = oy + sx * sin + sy * cos;
+    const exR = ox + ex * cos - ey * sin;
+    const eyR = oy + ex * sin + ey * cos;
+    return `  (segment (start ${sxR.toFixed(6)} ${syR.toFixed(6)}) (end ${exR.toFixed(6)} ${eyR.toFixed(6)}) (width 0.25) (layer "${layer}"))`;
+  };
+  return [
+    seg(inner, y, 3.4, y, 'F.Cu'),
+    seg(-inner, y, -3.4, y, 'F.Cu'),
+    seg(-7.62, y, -5.5, y, 'F.Cu'),
+    seg(-7.62, y, -5.5, y, 'B.Cu'),
+    seg(5.5, y, 7.62, y, 'F.Cu'),
+    seg(7.62, y, 5.5, y, 'B.Cu'),
+    seg(-2.604695, 0.23 + y, 3.17, 0.23 + y, 'B.Cu'),
+    seg(-4.775, y, -4.425305, y, 'B.Cu'),
+    seg(-3.700305, 0.725 + y, -3.099695, 0.725 + y, 'B.Cu'),
+    seg(-4.425305, y, -3.700305, 0.725 + y, 'B.Cu'),
+    seg(-3.099695, 0.725 + y, -2.604695, 0.23 + y, 'B.Cu'),
+    seg(4.775, y, 4.425305, y, 'B.Cu'),
+    seg(2.594695, -0.22 + y, -3.18, -0.22 + y, 'B.Cu'),
+    seg(4.425305, y, 3.700305, -0.725 + y, 'B.Cu'),
+    seg(3.700305, -0.725 + y, 3.099695, -0.725 + y, 'B.Cu'),
+    seg(3.099695, -0.725 + y, 2.594695, -0.22 + y, 'B.Cu'),
+  ].join('\n');
 }

@@ -5,6 +5,7 @@ import { serializeLayout, deserializeLayout } from '../lib/serialize/url';
 import { roundPos } from '../lib/snap';
 import { computeMTV, computePullCorrection } from '../lib/collision';
 import { getSwitchGeometry } from '../lib/switchGeometry';
+import { mergeOverlappingPlates } from '../lib/plate';
 import { minGap } from './editor';
 
 /** Sample layout: a basic 60% first row to demonstrate rendering */
@@ -103,6 +104,7 @@ function deepClone(layout: Layout): Layout {
       vertices: p.vertices.map((v) => ({ ...v })),
       screws: p.screws ? p.screws.map((s) => ({ ...s })) : undefined,
     })),
+    mirrorSizeUnsynced: layout.mirrorSizeUnsynced ? { ...layout.mirrorSizeUnsynced } : undefined,
   };
 }
 
@@ -111,19 +113,52 @@ function deepClone(layout: Layout): Layout {
 /** Flag to prevent mirror sync feedback loops */
 let _mirrorUpdating = false;
 
-/** Compute the mirrored position/rotation for a key across the given axis */
-function mirrorProps(source: Key, axisX: number): Partial<Key> {
+/**
+ * Compute the mirrored position/rotation for `source`'s partner across the
+ * given axis. When the pair has size sync turned off, only the partner's
+ * center mirrors source's center; the partner's existing width/height are
+ * preserved.
+ */
+function mirrorProps(
+  source: Key,
+  partner: Key,
+  axisX: number,
+  syncSize: boolean,
+): Partial<Key> {
+  if (syncSize) {
+    return {
+      x: axisX * 2 - source.x - source.width,
+      y: source.y,
+      rotation: -source.rotation,
+      width: source.width,
+      height: source.height,
+    };
+  }
+  // Size unsynced: mirror centers, keep partner's own width/height.
+  const srcCx = source.x + source.width / 2;
+  const srcCy = source.y + source.height / 2;
+  const partnerCx = axisX * 2 - srcCx;
   return {
-    x: axisX * 2 - source.x - source.width,
-    y: source.y,
+    x: partnerCx - partner.width / 2,
+    y: srcCy - partner.height / 2,
     rotation: -source.rotation,
-    width: source.width,
-    height: source.height,
   };
 }
 
-/** Sync mirror partners for the given key IDs */
-function syncMirror(keyIds: Set<string>) {
+/** Whether the pair containing the given key ID is size-synced. Default true. */
+function isPairSizeSynced(l: Layout, id: string): boolean {
+  return !(l.mirrorSizeUnsynced?.[id]);
+}
+
+/**
+ * Sync mirror partners for the given source IDs. Each source's partner is
+ * updated to its mirrored position across the axis. By default, partners
+ * already present in `sourceIds` are skipped (so two-key edits don't
+ * fight); pass `forceOverwrite: true` to override that — required for
+ * multi-key drags where both members of a pair are selected and we still
+ * want the non-source key to track the source.
+ */
+function syncMirror(sourceIds: Set<string>, forceOverwrite = false) {
   if (_mirrorUpdating) return;
   _mirrorUpdating = true;
 
@@ -132,12 +167,14 @@ function syncMirror(keyIds: Set<string>) {
     const axisX = l.mirrorAxisX;
     const updates = new Map<string, Partial<Key>>();
 
-    for (const id of keyIds) {
+    for (const id of sourceIds) {
       const partnerId = pairs[id];
-      if (!partnerId || keyIds.has(partnerId)) continue;
+      if (!partnerId) continue;
+      if (!forceOverwrite && sourceIds.has(partnerId)) continue;
       const source = l.keys.find((k) => k.id === id);
-      if (!source) continue;
-      updates.set(partnerId, mirrorProps(source, axisX));
+      const partner = l.keys.find((k) => k.id === partnerId);
+      if (!source || !partner) continue;
+      updates.set(partnerId, mirrorProps(source, partner, axisX, isPairSizeSynced(l, id)));
     }
 
     if (updates.size === 0) return l;
@@ -261,16 +298,58 @@ export function moveKey(keyId: string, x: number, y: number) {
   syncMirror(new Set([keyId]));
 }
 
-/** Move multiple keys by a delta (in U). No undo push; for use during drag. */
-export function moveKeys(keyIds: Set<string>, dx: number, dy: number) {
+/**
+ * Move multiple keys by a delta (in U). No undo push; for use during drag.
+ * When `anchorId` is supplied, paired keys that fall in the selection stay
+ * mirror-aligned: the key on the anchor's side of the axis acts as the
+ * source, and its partner is snapped to its mirrored position rather than
+ * carried along by the literal delta.
+ */
+export function moveKeys(keyIds: Set<string>, dx: number, dy: number, anchorId?: string) {
   layout.update((l) => {
     const keys = l.keys.map((k) =>
       keyIds.has(k.id) ? { ...k, x: k.x + dx, y: k.y + dy } : k
     );
-    enforceAlignmentGroups(keys, l.alignmentGroups);
-    return { ...l, keys };
+    // When every member of an alignment group is part of this move, the
+    // group as a whole shifts: bump the group's locked value by the same
+    // delta along the locked axis so the alignment stays valid after the
+    // drag instead of fighting the user.
+    const alignmentGroups = l.alignmentGroups.map((g) => {
+      const allMoving = g.keyIds.every((id) => keyIds.has(id));
+      if (!allMoving) return g;
+      const delta = g.axis === 'x' ? dx : dy;
+      return { ...g, value: g.value + delta };
+    });
+    enforceAlignmentGroups(keys, alignmentGroups);
+    return { ...l, keys, alignmentGroups };
   });
-  syncMirror(keyIds);
+
+  // Determine the source side from the anchor key. Pairs fully contained
+  // in the selection use the source-side member as canonical so the other
+  // half tracks via mirroring instead of drifting.
+  const l = get(layout);
+  const anchorKey = anchorId ? l.keys.find((k) => k.id === anchorId) : undefined;
+  const anchorOnLeft = anchorKey
+    ? anchorKey.x + anchorKey.width / 2 <= l.mirrorAxisX
+    : undefined;
+
+  const sources = new Set<string>(keyIds);
+  if (anchorOnLeft !== undefined) {
+    for (const id of keyIds) {
+      const partnerId = l.mirrorPairs[id];
+      if (!partnerId || !sources.has(partnerId)) continue;
+      const k = l.keys.find((x) => x.id === id);
+      if (!k) continue;
+      const onLeft = k.x + k.width / 2 <= l.mirrorAxisX;
+      if (onLeft === anchorOnLeft) {
+        // Keep the anchor-side key as the canonical source; drop its
+        // partner from the source set so syncMirror re-mirrors it (the
+        // partner was already nudged by the literal delta).
+        sources.delete(partnerId);
+      }
+    }
+  }
+  syncMirror(sources);
 }
 
 /** Update fields on keys. No undo push when used during rotation drag. */
@@ -288,14 +367,34 @@ export function updateKeysWithUndo(keyIds: Set<string>, patch: Partial<Omit<Key,
   updateKeys(keyIds, patch);
 }
 
-/** Add a new key at the given position, returns its ID */
+/**
+ * Add a new key at the given position, returns its ID. In mirrored mode,
+ * also creates and links the mirror partner in the same undo step. The
+ * returned ID is the originally-added key.
+ */
 export function addKey(x: number, y: number): string {
   pushUndo();
   const id = uuid();
-  layout.update((l) => ({
-    ...l,
-    keys: [...l.keys, { id, x, y, rotation: 0, width: 1, height: 1, label: '' }],
-  }));
+  const partnerId = uuid();
+  layout.update((l) => {
+    const newKey: Key = { id, x, y, rotation: 0, width: 1, height: 1, label: '' };
+    if (!l.mirrored) {
+      return { ...l, keys: [...l.keys, newKey] };
+    }
+    const axisX = l.mirrorAxisX;
+    const partner: Key = {
+      id: partnerId,
+      label: '',
+      width: newKey.width,
+      height: newKey.height,
+      ...mirrorProps(newKey, newKey, axisX, true),
+    };
+    return {
+      ...l,
+      keys: [...l.keys, newKey, partner],
+      mirrorPairs: { ...l.mirrorPairs, [id]: partnerId, [partnerId]: id },
+    };
+  });
   return id;
 }
 
@@ -303,24 +402,44 @@ export function addKey(x: number, y: number): string {
 export function deleteKeys(keyIds: Set<string>) {
   pushUndo();
   layout.update((l) => {
+    // In mirrored mode, deleting one key also deletes its partner so the
+    // "no unpaired keys" invariant holds.
+    const expanded = new Set(keyIds);
+    if (l.mirrored) {
+      for (const id of keyIds) {
+        const partnerId = l.mirrorPairs[id];
+        if (partnerId) expanded.add(partnerId);
+      }
+    }
     const pairs = { ...l.mirrorPairs };
-    for (const id of keyIds) {
+    const unsynced = { ...(l.mirrorSizeUnsynced ?? {}) };
+    for (const id of expanded) {
       const partnerId = pairs[id];
       if (partnerId) delete pairs[partnerId];
       delete pairs[id];
+      delete unsynced[id];
     }
     return {
       ...l,
-      keys: l.keys.filter((k) => !keyIds.has(k.id)),
+      keys: l.keys.filter((k) => !expanded.has(k.id)),
       mirrorPairs: pairs,
-      alignmentGroups: pruneAlignmentGroups(l.alignmentGroups, keyIds),
+      alignmentGroups: pruneAlignmentGroups(l.alignmentGroups, expanded),
+      mirrorSizeUnsynced: Object.keys(unsynced).length > 0 ? unsynced : undefined,
     };
   });
 }
 
-/** Link two keys as a mirror pair. Immediately syncs the second key to mirror the first. */
+/**
+ * Link two keys as a mirror pair. The first pair on the layout seeds the
+ * mirror axis from the midpoint between the two keys' centers; subsequent
+ * links leave the axis untouched and move one key to mirror the other
+ * across the existing axis. The leftmost key acts as the source so already-
+ * linked pairs on the left half stay put when the right-half partner is
+ * (re)linked.
+ */
 export function linkMirrorPair(keyIdA: string, keyIdB: string) {
   pushUndo();
+  let sourceId = keyIdA;
   layout.update((l) => {
     const pairs = { ...l.mirrorPairs };
     // Remove any existing partners
@@ -332,31 +451,51 @@ export function linkMirrorPair(keyIdA: string, keyIdB: string) {
     pairs[keyIdA] = keyIdB;
     pairs[keyIdB] = keyIdA;
 
-    // Compute the mirror axis from the midpoint between the two keys' centers
     const keyA = l.keys.find((k) => k.id === keyIdA);
     const keyB = l.keys.find((k) => k.id === keyIdB);
     let axisX = l.mirrorAxisX;
+    const hadExistingPairs = Object.keys(l.mirrorPairs).some(
+      (id) => id !== keyIdA && id !== keyIdB && id !== oldA && id !== oldB,
+    );
     if (keyA && keyB) {
-      const centerA = keyA.x + keyA.width / 2;
-      const centerB = keyB.x + keyB.width / 2;
-      axisX = (centerA + centerB) / 2;
+      if (!hadExistingPairs) {
+        // First pair: seed the axis at the midpoint so neither key moves.
+        const centerA = keyA.x + keyA.width / 2;
+        const centerB = keyB.x + keyB.width / 2;
+        axisX = (centerA + centerB) / 2;
+      } else {
+        // Subsequent pairs: keep the axis fixed and let the leftmost key
+        // drive the mirror so the right-side partner snaps into alignment.
+        const centerA = keyA.x + keyA.width / 2;
+        const centerB = keyB.x + keyB.width / 2;
+        sourceId = centerA <= centerB ? keyIdA : keyIdB;
+      }
     }
 
     return { ...l, mirrorPairs: pairs, mirrorAxisX: axisX };
   });
-  // Sync B to mirror A
-  syncMirror(new Set([keyIdA]));
+  syncMirror(new Set([sourceId]));
 }
 
-/** Unlink a mirror pair */
+/** Unlink a mirror pair. No-op while mirrored mode is on (UI hides the
+ *  button there; this guard protects against programmatic calls). */
 export function unlinkMirrorPair(keyId: string) {
+  const l = get(layout);
+  if (l.mirrored) return;
   pushUndo();
   layout.update((l) => {
     const pairs = { ...l.mirrorPairs };
     const partnerId = pairs[keyId];
     if (partnerId) delete pairs[partnerId];
     delete pairs[keyId];
-    return { ...l, mirrorPairs: pairs };
+    const unsynced = { ...(l.mirrorSizeUnsynced ?? {}) };
+    delete unsynced[keyId];
+    if (partnerId) delete unsynced[partnerId];
+    return {
+      ...l,
+      mirrorPairs: pairs,
+      mirrorSizeUnsynced: Object.keys(unsynced).length > 0 ? unsynced : undefined,
+    };
   });
 }
 
@@ -372,10 +511,46 @@ export function createAlignmentGroup(keyIds: Set<string>, axis: 'x' | 'y') {
     // Compute average position on the locked axis
     const avg = roundPos(memberKeys.reduce((sum, k) => sum + k[axis], 0) / memberKeys.length);
 
-    // Remove these keys from any existing alignment groups on the same axis
+    // Find mirror partners for every member. We create a sibling alignment
+    // group on the partners so aligning the left half also aligns the right
+    // half. Skipped when:
+    //   - any member has no partner (the partner group would be incomplete);
+    //   - axis='x' and members have differing widths (a single locked X
+    //     value can't describe both halves at once since each partner's X
+    //     depends on its own width).
+    const partnerIds: string[] = [];
+    let canMirrorGroup = true;
+    const memberWidths = new Set<number>();
+    for (const k of memberKeys) {
+      memberWidths.add(k.width);
+      const p = l.mirrorPairs[k.id];
+      if (!p) { canMirrorGroup = false; break; }
+      partnerIds.push(p);
+    }
+    if (axis === 'x' && memberWidths.size > 1) canMirrorGroup = false;
+
+    let partnerValue = 0;
+    if (canMirrorGroup) {
+      if (axis === 'y') {
+        partnerValue = avg;
+      } else {
+        // For x-axis: partner.x = 2*axisX - source.x - source.width.
+        // memberWidths has exactly one entry here (the canMirrorGroup check
+        // above guarantees it).
+        const w = memberWidths.values().next().value as number;
+        partnerValue = roundPos(l.mirrorAxisX * 2 - avg - w);
+      }
+    }
+
+    const partnerIdSet = new Set(canMirrorGroup ? partnerIds : []);
+    const affectedIds = canMirrorGroup
+      ? new Set([...keyIds, ...partnerIds])
+      : keyIds;
+
+    // Remove affected keys from any existing alignment groups on the same axis
     let groups = l.alignmentGroups.map((g) => {
       if (g.axis !== axis) return g;
-      return { ...g, keyIds: g.keyIds.filter((id) => !keyIds.has(id)) };
+      return { ...g, keyIds: g.keyIds.filter((id) => !affectedIds.has(id)) };
     }).filter((g) => g.keyIds.length >= 2);
 
     // Create the new group
@@ -387,10 +562,22 @@ export function createAlignmentGroup(keyIds: Set<string>, axis: 'x' | 'y') {
     };
     groups = [...groups, group];
 
-    // Snap all members to the locked coordinate
-    const keys = l.keys.map((k) =>
-      keyIds.has(k.id) ? { ...k, [axis]: avg } : k
-    );
+    if (canMirrorGroup) {
+      groups = [...groups, {
+        id: uuid(),
+        axis,
+        value: partnerValue,
+        keyIds: partnerIds,
+      }];
+    }
+
+    // Snap all members to the locked coordinate, plus partners to the
+    // mirrored coordinate if we created a partner group.
+    const keys = l.keys.map((k) => {
+      if (keyIds.has(k.id)) return { ...k, [axis]: avg };
+      if (partnerIdSet.has(k.id)) return { ...k, [axis]: partnerValue };
+      return k;
+    });
 
     return { ...l, keys, alignmentGroups: groups };
   });
@@ -422,7 +609,12 @@ export function removeKeysFromAlignment(keyIds: Set<string>) {
  * Phase 2: Pull together using pair-based corrections with damping,
  *          only for direct neighbors (no key between them).
  *
- * Mirror partners are re-synced after all adjustments.
+ * Empty-label keys are treated as placeholders and don't participate in
+ * gap constraints (non-empty keys can overlap them freely).
+ *
+ * After every iteration the mirror invariant is restored — paired keys
+ * stay symmetric across the axis throughout the relaxation, so the final
+ * state never has drifted pairs.
  */
 export function enforceMinGap() {
   const gap = get(minGap);
@@ -437,22 +629,109 @@ export function enforceMinGap() {
   const keys = l.keys.map((k) => ({ ...k }));
   let changed = false;
 
-  // Phase 1: Push apart (Gauss-Seidel: apply each correction immediately)
+  // Empty-label keys are placeholders: they don't impose gap constraints
+  // on real keys, regardless of whether their mirror partner is real.
+  // (Force routing below makes sure the *real* member of a pair still
+  // feels every constraint it should — including ones whose only check
+  // touches the empty member only indirectly, via mirror propagation.)
+  const idToKey = new Map(keys.map((k) => [k.id, k]));
+  const eligible = (idx: number) => keys[idx].label.trim().length > 0;
+
+  // Pick a stable canonical key per pair from the initial layout (lower
+  // center x wins; ties broken by ID). All forces during relaxation flow
+  // through the canonical side so the pair stays mirror-consistent.
+  const initialCenter = new Map<string, number>();
+  for (const k of keys) initialCenter.set(k.id, k.x + k.width / 2);
+  const canonicalId = new Map<string, string>();
+  {
+    const seenInit = new Set<string>();
+    for (const [idA, idB] of Object.entries(l.mirrorPairs)) {
+      if (seenInit.has(idA)) continue;
+      seenInit.add(idA); seenInit.add(idB);
+      const ca = initialCenter.get(idA) ?? 0;
+      const cb = initialCenter.get(idB) ?? 0;
+      const winner = ca < cb || (ca === cb && idA < idB) ? idA : idB;
+      canonicalId.set(idA, winner);
+      canonicalId.set(idB, winner);
+    }
+  }
+
+  /**
+   * Apply a positional delta to a key. Forces on a non-canonical partner
+   * are translated to its canonical (mirrored across the axis: x flips,
+   * y stays) so the pair always moves as a unit.
+   */
+  function applyDelta(k: Key, dx: number, dy: number) {
+    const partnerId = l.mirrorPairs[k.id];
+    const canonical = partnerId ? canonicalId.get(k.id) : k.id;
+    if (!canonical || canonical === k.id) {
+      k.x = roundPos(k.x + dx);
+      k.y = roundPos(k.y + dy);
+      return;
+    }
+    const canon = idToKey.get(canonical);
+    if (!canon) {
+      k.x = roundPos(k.x + dx);
+      k.y = roundPos(k.y + dy);
+      return;
+    }
+    canon.x = roundPos(canon.x - dx);
+    canon.y = roundPos(canon.y + dy);
+  }
+
+  function reSyncMirrors() {
+    const seen = new Set<string>();
+    for (const [idA, idB] of Object.entries(l.mirrorPairs)) {
+      if (seen.has(idA)) continue;
+      seen.add(idA); seen.add(idB);
+      const a = idToKey.get(idA);
+      const b = idToKey.get(idB);
+      if (!a || !b) continue;
+      const srcId = canonicalId.get(idA);
+      const [src, dst] = srcId === idA ? [a, b] : [b, a];
+      const syncSize = !(l.mirrorSizeUnsynced?.[src.id]);
+      if (syncSize) {
+        dst.x = roundPos(l.mirrorAxisX * 2 - src.x - src.width);
+        dst.y = src.y;
+        dst.rotation = -src.rotation;
+        dst.width = src.width;
+        dst.height = src.height;
+      } else {
+        const srcCx = src.x + src.width / 2;
+        const srcCy = src.y + src.height / 2;
+        dst.x = roundPos(l.mirrorAxisX * 2 - srcCx - dst.width / 2);
+        dst.y = roundPos(srcCy - dst.height / 2);
+        dst.rotation = -src.rotation;
+      }
+    }
+  }
+
+  // Initial sync so the iteration starts from a mirror-consistent state.
+  reSyncMirrors();
+
+  // Phase 1: Push apart (Gauss-Seidel: apply each correction immediately).
+  // Forces flow through applyDelta so non-canonical partners route their
+  // share onto the canonical side; mirror sync after each pass then
+  // re-propagates the canonical position back across the axis.
   for (let iter = 0; iter < 100; iter++) {
     let maxDelta = 0;
     for (let i = 0; i < keys.length; i++) {
+      if (!eligible(i)) continue;
       for (let j = i + 1; j < keys.length; j++) {
+        if (!eligible(j)) continue;
+        // Skip the pair when (i, j) are mirror partners: their position
+        // relationship is enforced by reSyncMirrors and the MTV between
+        // them is meaningless (they're on opposite sides of the axis).
+        if (l.mirrorPairs[keys[i].id] === keys[j].id) continue;
         const mtv = computeMTV(keys[i], keys[j], gapU);
         if (!mtv) continue;
         const mag = Math.sqrt(mtv.x * mtv.x + mtv.y * mtv.y);
         if (mag > maxDelta) maxDelta = mag;
-        // Split MTV: move each key half the distance
-        keys[i].x = roundPos(keys[i].x - mtv.x / 2);
-        keys[i].y = roundPos(keys[i].y - mtv.y / 2);
-        keys[j].x = roundPos(keys[j].x + mtv.x / 2);
-        keys[j].y = roundPos(keys[j].y + mtv.y / 2);
+        applyDelta(keys[i], -mtv.x / 2, -mtv.y / 2);
+        applyDelta(keys[j], mtv.x / 2, mtv.y / 2);
       }
     }
+    reSyncMirrors();
     if (maxDelta < 0.001) break;
     changed = true;
   }
@@ -462,34 +741,37 @@ export function enforceMinGap() {
   for (let iter = 0; iter < 60; iter++) {
     let maxDelta = 0;
     for (let i = 0; i < keys.length; i++) {
+      if (!eligible(i)) continue;
       for (let j = i + 1; j < keys.length; j++) {
+        if (!eligible(j)) continue;
+        if (l.mirrorPairs[keys[i].id] === keys[j].id) continue;
         const corr = computePullCorrection(keys[i], keys[j], gapU, keys);
         if (!corr) continue;
         const mag = Math.sqrt(corr.x * corr.x + corr.y * corr.y);
         if (mag > maxDelta) maxDelta = mag;
-        // Split correction: both keys move toward each other
         const dx = corr.x * DAMPING * 0.5;
         const dy = corr.y * DAMPING * 0.5;
-        keys[i].x = roundPos(keys[i].x - dx);
-        keys[i].y = roundPos(keys[i].y - dy);
-        keys[j].x = roundPos(keys[j].x + dx);
-        keys[j].y = roundPos(keys[j].y + dy);
+        applyDelta(keys[i], -dx, -dy);
+        applyDelta(keys[j], dx, dy);
       }
     }
+    reSyncMirrors();
     if (maxDelta < 0.001) break;
     changed = true;
 
     // Re-run push-apart after each pull iteration to prevent overlaps
     for (let i = 0; i < keys.length; i++) {
+      if (!eligible(i)) continue;
       for (let j = i + 1; j < keys.length; j++) {
+        if (!eligible(j)) continue;
+        if (l.mirrorPairs[keys[i].id] === keys[j].id) continue;
         const mtv = computeMTV(keys[i], keys[j], gapU);
         if (!mtv) continue;
-        keys[i].x = roundPos(keys[i].x - mtv.x / 2);
-        keys[i].y = roundPos(keys[i].y - mtv.y / 2);
-        keys[j].x = roundPos(keys[j].x + mtv.x / 2);
-        keys[j].y = roundPos(keys[j].y + mtv.y / 2);
+        applyDelta(keys[i], -mtv.x / 2, -mtv.y / 2);
+        applyDelta(keys[j], mtv.x / 2, mtv.y / 2);
       }
     }
+    reSyncMirrors();
   }
 
   // Enforce alignment groups: compute average drift on locked axis and re-align
@@ -505,28 +787,13 @@ export function enforceMinGap() {
     }
     changed = true;
   }
+  // Realign mirrored partners after the alignment-group snap.
+  reSyncMirrors();
 
   if (!changed) return;
 
   pushUndo();
   layout.set({ ...l, keys, alignmentGroups: l.alignmentGroups.map((g) => ({ ...g, keyIds: [...g.keyIds] })) });
-
-  // Re-sync mirror partners
-  const pairs = l.mirrorPairs;
-  const seen = new Set<string>();
-  const toSync = new Set<string>();
-  for (const [idA, idB] of Object.entries(pairs)) {
-    if (seen.has(idA)) continue;
-    seen.add(idA);
-    seen.add(idB);
-    const keyA = keys.find((k) => k.id === idA);
-    const keyB = keys.find((k) => k.id === idB);
-    if (!keyA || !keyB) continue;
-    const centerA = keyA.x + keyA.width / 2;
-    const centerB = keyB.x + keyB.width / 2;
-    toSync.add(centerA <= centerB ? idA : idB);
-  }
-  if (toSync.size > 0) syncMirror(toSync);
 }
 
 // --- Plate outline mutations ---
@@ -535,6 +802,24 @@ export function enforceMinGap() {
 export function setPlates(plates: PlateOutline[]) {
   pushUndo();
   layout.update((l) => ({ ...l, plates }));
+}
+
+/**
+ * Union any plate outlines that currently overlap. Returns true when a
+ * merge happened.
+ *
+ * When called inside a continuous operation (drag), pass
+ * `{ pushUndo: false }` so the merge folds into the drag's single undo
+ * step. Standalone callers should leave the default; an undo snapshot is
+ * pushed automatically if a merge happens.
+ */
+export function mergePlateOverlaps(options: { pushUndo?: boolean } = {}): boolean {
+  const l = get(layout);
+  const merged = mergeOverlappingPlates(l.plates);
+  if (!merged) return false;
+  if (options.pushUndo !== false) pushUndo();
+  layout.update((cur) => ({ ...cur, plates: merged }));
+  return true;
 }
 
 /** Move a vertex within a plate. No undo push; for use during drag. */
@@ -703,6 +988,205 @@ export function resetScrewsToAuto() {
       return rest;
     }),
   }));
+}
+
+/**
+ * Toggle Mirrored mode. Enabling removes any keys without a mirror partner
+ * (undo restores them) and, if no mirror axis is set yet, picks the
+ * bounding-box center X of the surviving paired keys as the axis.
+ */
+export function setMirroredMode(enabled: boolean) {
+  const current = get(layout);
+  if ((current.mirrored ?? false) === enabled) return;
+  pushUndo();
+  layout.update((l) => {
+    if (!enabled) {
+      return { ...l, mirrored: false };
+    }
+    // Compute axis from existing keys' bbox center if no pairs already
+    // define one. If pairs exist, keep the established axis.
+    let axisX = l.mirrorAxisX;
+    const hasExistingPairs = Object.keys(l.mirrorPairs).length > 0;
+    if (!hasExistingPairs && l.keys.length > 0) {
+      let minX = Infinity, maxX = -Infinity;
+      for (const k of l.keys) {
+        const cx = k.x + k.width / 2;
+        if (cx < minX) minX = cx;
+        if (cx > maxX) maxX = cx;
+      }
+      axisX = (minX + maxX) / 2;
+    }
+    // Remove unpaired keys.
+    const keys = l.keys.filter((k) => l.mirrorPairs[k.id]);
+    const removedIds = new Set(l.keys.filter((k) => !l.mirrorPairs[k.id]).map((k) => k.id));
+    return {
+      ...l,
+      mirrored: true,
+      mirrorAxisX: axisX,
+      keys,
+      alignmentGroups: pruneAlignmentGroups(l.alignmentGroups, removedIds),
+    };
+  });
+}
+
+/**
+ * Set the per-pair size-sync flag for the pair containing `keyId`. When
+ * `synced` is true (the default), partner widths/heights stay synchronized;
+ * when false, partners can have independent dimensions while their centers
+ * remain mirrored. Re-syncs the partner immediately so the pair is
+ * consistent after the toggle.
+ */
+export function setMirrorSizeSync(keyId: string, synced: boolean) {
+  const l = get(layout);
+  const partnerId = l.mirrorPairs[keyId];
+  if (!partnerId) return;
+  pushUndo();
+  layout.update((l) => {
+    const unsynced = { ...(l.mirrorSizeUnsynced ?? {}) };
+    if (synced) {
+      delete unsynced[keyId];
+      delete unsynced[partnerId];
+    } else {
+      unsynced[keyId] = true;
+      unsynced[partnerId] = true;
+    }
+    return {
+      ...l,
+      mirrorSizeUnsynced: Object.keys(unsynced).length > 0 ? unsynced : undefined,
+    };
+  });
+  // Re-sync the partner so the new flag is reflected immediately. Use the
+  // left-of-axis key as the source for determinism.
+  const refreshed = get(layout);
+  const a = refreshed.keys.find((k) => k.id === keyId);
+  const b = refreshed.keys.find((k) => k.id === partnerId);
+  if (!a || !b) return;
+  const cxA = a.x + a.width / 2;
+  const cxB = b.x + b.width / 2;
+  const sourceId = cxA <= cxB ? keyId : partnerId;
+  syncMirror(new Set([sourceId]));
+}
+
+// --- Clipboard ---
+//
+// In-memory clipboard for Cmd+C / Cmd+V. Keeps original IDs so paste can
+// reconstruct mirror pairings when the user copied both members of a pair.
+// `pasteCount` makes consecutive pastes stair-step rather than stack.
+
+let _clipboard: Key[] = [];
+let _clipboardPairs: Record<string, string> = {};
+let _pasteCount = 0;
+const PASTE_OFFSET_U = 0.5;
+
+/** Snapshot the selected keys into the clipboard. Resets the paste counter. */
+export function copySelection(keyIds: Set<string>) {
+  if (keyIds.size === 0) return;
+  const l = get(layout);
+  _clipboard = l.keys.filter((k) => keyIds.has(k.id)).map((k) => ({ ...k }));
+  // Preserve only pairings whose BOTH members were copied.
+  _clipboardPairs = {};
+  for (const k of _clipboard) {
+    const partnerId = l.mirrorPairs[k.id];
+    if (partnerId && keyIds.has(partnerId)) {
+      _clipboardPairs[k.id] = partnerId;
+    }
+  }
+  _pasteCount = 0;
+}
+
+/**
+ * Paste the clipboard at a small offset from the originals. Pairings copied
+ * together are recreated between the new keys; in Mirrored mode, any
+ * pasted key without a copied partner gets a fresh mirror partner so the
+ * "no unpaired keys" invariant holds.
+ *
+ * Returns the IDs of the keys the caller should select (the pasted source
+ * keys, plus auto-created partners in mirrored mode).
+ */
+export function pasteClipboard(): Set<string> {
+  if (_clipboard.length === 0) return new Set();
+  pushUndo();
+  _pasteCount++;
+  const offset = PASTE_OFFSET_U * _pasteCount;
+
+  const oldToNew: Record<string, string> = {};
+  const newKeys: Key[] = _clipboard.map((k) => {
+    const newId = uuid();
+    oldToNew[k.id] = newId;
+    return { ...k, id: newId, x: k.x + offset, y: k.y + offset };
+  });
+
+  // Reconstruct copied pairings on the new keys.
+  const newPairs: Record<string, string> = {};
+  const seen = new Set<string>();
+  for (const [oldA, oldB] of Object.entries(_clipboardPairs)) {
+    if (seen.has(oldA)) continue;
+    seen.add(oldA);
+    seen.add(oldB);
+    const newA = oldToNew[oldA];
+    const newB = oldToNew[oldB];
+    if (newA && newB) {
+      newPairs[newA] = newB;
+      newPairs[newB] = newA;
+    }
+  }
+
+  const select = new Set<string>(newKeys.map((k) => k.id));
+
+  layout.update((l) => {
+    let keys = [...l.keys, ...newKeys];
+    let pairs = { ...l.mirrorPairs, ...newPairs };
+
+    // Mirrored mode: every pasted key needs a partner. Auto-create one
+    // for any new key not already paired by the copy.
+    if (l.mirrored) {
+      const axisX = l.mirrorAxisX;
+      const extra: Key[] = [];
+      for (const nk of newKeys) {
+        if (pairs[nk.id]) continue;
+        const partnerId = uuid();
+        const partner: Key = {
+          id: partnerId,
+          label: nk.label,
+          width: nk.width,
+          height: nk.height,
+          ...mirrorProps(nk, nk, axisX, true),
+        };
+        extra.push(partner);
+        pairs[nk.id] = partnerId;
+        pairs[partnerId] = nk.id;
+        select.add(partnerId);
+      }
+      keys = [...keys, ...extra];
+    }
+
+    return { ...l, keys, mirrorPairs: pairs };
+  });
+
+  // Re-sync any pair where both halves were pasted so the partner snaps to
+  // its mirrored position instead of drifting along with the offset.
+  const sources: string[] = [];
+  for (const [oldA, oldB] of Object.entries(_clipboardPairs)) {
+    if (oldA >= oldB) continue;
+    const a = oldToNew[oldA];
+    const b = oldToNew[oldB];
+    if (!a || !b) continue;
+    const l = get(layout);
+    const ka = l.keys.find((k) => k.id === a);
+    const kb = l.keys.find((k) => k.id === b);
+    if (!ka || !kb) continue;
+    const cxA = ka.x + ka.width / 2;
+    const cxB = kb.x + kb.width / 2;
+    sources.push(cxA <= cxB ? a : b);
+  }
+  if (sources.length > 0) syncMirror(new Set(sources));
+
+  return select;
+}
+
+/** Whether the clipboard has anything (for UI / shortcut gating). */
+export function hasClipboardContent(): boolean {
+  return _clipboard.length > 0;
 }
 
 /** Move the mirror axis to a new X position (in U). No undo push; for use during drag. */

@@ -1,14 +1,15 @@
 <script lang="ts">
   import { layout, pushUndoExported, updateLayoutField } from '../stores/layout';
   import { selection } from '../stores/editor';
-  import { matrix, matrixErrors, resetMatrix, setKeyMatrix, primaryColor, secondaryColor, schematicFocus, pinAssignments, pinErrors, setPinNet, resetPins, type SchematicFocus } from '../stores/schematic';
-  import { matrixDimensions } from '../lib/matrix';
+  import { matrix, matrixErrors, resetMatrix, setKeyMatrix, primaryColor, secondaryColor, schematicFocus, pinAssignments, pinErrors, setPinNet, resetPins, schematicVisibleKeys, type SchematicFocus } from '../stores/schematic';
+  import { matrixDimensions, findUnpairedKeys } from '../lib/matrix';
   import { PRO_MICRO_PINS } from '../lib/serialize/proMicro';
   import { SWITCH_TYPE_LABELS, type SwitchType } from '../lib/switchGeometry';
   import type { Key } from '../types';
 
   let currentSwitchType = $derived($layout.switchType ?? 'mx');
   let hotswap = $derived($layout.hotswap === true);
+  let reversible = $derived($layout.reversible === true);
 
   function onSwitchTypeChange(e: Event) {
     const val = (e.currentTarget as HTMLSelectElement).value as SwitchType;
@@ -22,6 +23,16 @@
     updateLayoutField('hotswap', checked);
   }
 
+  function onReversibleChange(e: Event) {
+    const checked = (e.currentTarget as HTMLInputElement).checked;
+    pushUndoExported();
+    updateLayoutField('reversible', checked);
+  }
+
+  let unpairedKeyIds = $derived(
+    reversible ? findUnpairedKeys($layout.keys, $layout.mirrorPairs) : []
+  );
+
   let dims = $derived(matrixDimensions($matrix));
 
   let selectedKeys: Key[] = $derived(
@@ -34,10 +45,12 @@
 
   let errorCount = $derived($matrixErrors.size);
 
+  let visibleKeys = $derived(schematicVisibleKeys($layout));
+
   // Build a row -> keys map
   let rowMap = $derived.by(() => {
     const map: Map<number, { key: Key; col: number }[]> = new Map();
-    for (const key of $layout.keys) {
+    for (const key of visibleKeys) {
       const cell = $matrix[key.id];
       if (!cell) continue;
       if (!map.has(cell.row)) map.set(cell.row, []);
@@ -52,7 +65,7 @@
   // Build a col -> keys map
   let colMap = $derived.by(() => {
     const map: Map<number, { key: Key; row: number }[]> = new Map();
-    for (const key of $layout.keys) {
+    for (const key of visibleKeys) {
       const cell = $matrix[key.id];
       if (!cell) continue;
       if (!map.has(cell.col)) map.set(cell.col, []);
@@ -144,6 +157,22 @@
     <span>Hot-swap sockets</span>
   </label>
 
+  <label class="checkbox-field" for="reversible-toggle">
+    <input
+      id="reversible-toggle"
+      type="checkbox"
+      checked={reversible}
+      onchange={onReversibleChange}
+    />
+    <span>Reversible PCB (single design, fab two)</span>
+  </label>
+
+  {#if reversible && unpairedKeyIds.length > 0}
+    <div class="error-banner">
+      {unpairedKeyIds.length} key{unpairedKeyIds.length > 1 ? 's' : ''} not in a mirror pair. Reversible mode requires every key to be paired (press M on a pair in Layout mode).
+    </div>
+  {/if}
+
   <h2>Matrix Assignment</h2>
 
   <div class="dims">
@@ -151,7 +180,7 @@
     <span class="dim-sep">&times;</span>
     <span class="dim-label">{dims.cols} cols</span>
     <span class="dim-sep">=</span>
-    <span class="dim-label">{$layout.keys.length} keys</span>
+    <span class="dim-label">{visibleKeys.length} keys</span>
   </div>
 
   {#if errorCount > 0}

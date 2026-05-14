@@ -7,7 +7,6 @@
   import { editorMode, type EditorMode } from './stores/schematic';
   import { importKle, exportKle } from './lib/serialize/kle';
   import { exportErgogen } from './lib/serialize/ergogen';
-  import { exportKicadSch } from './lib/serialize/kicad';
   import { exportKicadPcb } from './lib/serialize/kicadPcb';
   import { exportPng } from './lib/exportPng';
   import { exportPlateStl } from './lib/exportStl';
@@ -63,17 +62,6 @@
   }
 
   function onExportKicad() {
-    const sch = exportKicadSch($layout, $matrix);
-    const blob = new Blob([sch], { type: 'application/x-kicad-schematic' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = `${$layout.name || 'layout'}.kicad_sch`;
-    a.click();
-    URL.revokeObjectURL(url);
-  }
-
-  function onExportKicadPcb() {
     const pcb = exportKicadPcb($layout, $matrix);
     const blob = new Blob([pcb], { type: 'application/x-kicad-pcb' });
     const url = URL.createObjectURL(blob);
@@ -155,8 +143,7 @@
         <button onclick={onExportKle}>Export KLE</button>
         <button onclick={onExportErgogen}>Export Ergogen</button>
       {:else if $editorMode === 'schematic'}
-        <button onclick={onExportKicad}>Export Schematic</button>
-        <button onclick={onExportKicadPcb}>Export PCB</button>
+        <button onclick={onExportKicad}>Export KiCad</button>
       {:else if $editorMode === 'plate'}
         <button onclick={onExportStl}>Export STL</button>
       {/if}

@@ -58,7 +58,6 @@ A KiCad-ready PCB built from the matrix and pin map, including switch footprints
 |---|---|
 | **KLE JSON** | Full round-trip: rotation groups, multi-line labels, cumulative cursor model |
 | **Ergogen v4 YAML** | Separate zones per rotation group, validated against ergogen's own library |
-| **KiCad schematic** (`.kicad_sch`) | Switches, diodes, MCU, matrix wiring, net labels |
 | **KiCad PCB** (`.kicad_pcb`) | Footprints, traces, and zones for the full board |
 | **Plate STL** | Sandwich-case STL from the closed plate outline, with screw holes and stabilizer cutouts |
 | **PNG** | Rasterized canvas snapshot |

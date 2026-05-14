@@ -9,6 +9,14 @@ export interface Key {
   width: number;   // in U (default 1)
   height: number;  // in U (default 1)
   label: string;
+  /**
+   * Which sides of a split keyboard render this key on the plate. Only used
+   * when the layout's `reversible` flag is on; otherwise treated as both.
+   * Undefined means "both" (default). PCB export ignores this field — the
+   * reversible PCB always has pads for every position; the user simply
+   * skips soldering switches at omitted positions.
+   */
+  sides?: ('L' | 'R')[];
 }
 
 export interface AlignmentGroup {
@@ -47,6 +55,12 @@ export interface Layout {
   plates: PlateOutline[];
   /** Corner fillet radius in mm (0 = sharp corners) */
   plateCornerRadius: number;
+  /**
+   * Padding in mm around each key when auto-generating the plate outline.
+   * Controls how much "border" sits between the outermost keys and the
+   * edge of the plate. Undefined defaults to 6mm for backwards compat.
+   */
+  platePadding?: number;
   /** Manual Pro Micro pin overrides: physical pin number -> net name (e.g. "ROW0", "COL1") or "" to unassign */
   pinOverrides?: Record<number, string>;
   /** Mechanical switch family. Affects 1U pitch, plate cutout, and PCB footprint. Defaults to MX. */
@@ -59,4 +73,26 @@ export interface Layout {
    * required stabilizer hardware.
    */
   stabilizers?: boolean;
+  /**
+   * Reversible single-PCB mode. When true, the PCB export emits the left
+   * half only with footprints in reversible mode (dual-side pads) so the
+   * same fab works flipped as the right half. Requires every key to belong
+   * to a mirror pair; the schematic/PCB panels surface this as a validation
+   * error before export.
+   */
+  reversible?: boolean;
+  /**
+   * Mirrored layout-edit mode. When true, adding a key creates both it and
+   * its mirror partner automatically; deleting a key drops its partner;
+   * unlinking is disabled. Enabling the mode removes any unpaired keys
+   * (undo restores them).
+   */
+  mirrored?: boolean;
+  /**
+   * Per-pair opt-out of size sync. Keys whose IDs appear here keep their
+   * own width/height independent of their mirror partner; only their
+   * centers and rotation stay mirrored. Stored bidirectionally — both
+   * members of the pair get an entry.
+   */
+  mirrorSizeUnsynced?: Record<string, true>;
 }

@@ -59,6 +59,18 @@ export function matrixDimensions(matrix: MatrixMap): { rows: number; cols: numbe
   return { rows: maxRow + 1, cols: maxCol + 1 };
 }
 
+/**
+ * Return the IDs of keys that have no mirror partner. Used to validate
+ * reversible-PCB mode, which requires every key to live in a mirror pair so
+ * the single-half PCB fully describes both halves.
+ */
+export function findUnpairedKeys(
+  keys: Key[],
+  mirrorPairs: Record<string, string>,
+): string[] {
+  return keys.filter((k) => !mirrorPairs[k.id]).map((k) => k.id);
+}
+
 /** Find keys that share the same (row, col) position */
 export function findDuplicates(matrix: MatrixMap): Map<string, string[]> {
   // Group key IDs by "row,col" string

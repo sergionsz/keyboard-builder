@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { layout, moveKey, moveKeys, updateKeys, addKey, deleteKeys, beginContinuous, endContinuous, undo, redo, setMirrorAxisX, linkMirrorPair, unlinkMirrorPair, createAlignmentGroup, setPlates, movePlateVertex, movePlateVertices, addPlateVertex, removePlateVertices, setPlateScrews, moveScrew, moveScrews, addScrew, removeScrews } from '../stores/layout';
+  import { layout, moveKey, moveKeys, updateKeys, addKey, deleteKeys, beginContinuous, endContinuous, undo, redo, setMirrorAxisX, linkMirrorPair, unlinkMirrorPair, createAlignmentGroup, setPlates, movePlateVertex, movePlateVertices, addPlateVertex, removePlateVertices, setPlateScrews, moveScrew, moveScrews, addScrew, removeScrews, copySelection, pasteClipboard, mergePlateOverlaps } from '../stores/layout';
   import { pan, zoom, spaceHeld, altHeld, drag, gridSnap, minGap, selection, rotating, plateKeyDisplay } from '../stores/editor';
   import { SCALE, screenToCanvas, canvasPxToU } from '../lib/coords';
   import { snapToGrid, snapAngle, roundPos, roundRot, computeAlignmentGuides, applyGuideSnap, type AlignmentGuide } from '../lib/snap';
@@ -7,31 +7,36 @@
   import type { Key } from '../types';
   import KeyShape from './KeyShape.svelte';
   import SelectionHandles from './SelectionHandles.svelte';
-  import { editorMode, schematicFocus, matrix, matrixErrors, primaryColor, secondaryColor, pinAssignments, pinErrors } from '../stores/schematic';
+  import { editorMode, schematicFocus, matrix, matrixErrors, primaryColor, secondaryColor, pinAssignments, pinErrors, schematicVisibleKeys } from '../stores/schematic';
   import type { MatrixAssignment } from '../lib/matrix';
-  import { generatePlateOutlines, filletPolygon, type PlatePolygon } from '../lib/plate';
+  import { generatePlateOutlines, filletPolygon, reversibleSourceKeys, type PlatePolygon } from '../lib/plate';
   import { PRO_MICRO_PINS } from '../lib/serialize/proMicro';
   import { getSwitchGeometry } from '../lib/switchGeometry';
-  import { resolvePlateScrewsU, isValidPlateScrewU } from '../lib/exportStl';
+  import { resolvePlateScrewsU, isValidPlateScrewU, keyRendersOnPlate } from '../lib/exportStl';
   import { stabilizerCutoutRings } from '../lib/stabilizers';
 
-  // MCU visualization constants (in canvas units = U)
-  const MCU_W = 2;      // width in U
-  const MCU_H = 4;      // height in U
-  const MCU_GAP = 2;    // gap between rightmost key and MCU
-  const MCU_PIN_SPACING = MCU_H / 13; // spacing between pins on each side
-  // USB-C port silhouette at the top edge of the MCU body, in U.
+  // MCU visualization constants (in canvas units = U). The MCU is rendered
+  // rotated 90° vs. the physical board so its long axis lies horizontally
+  // below the keys; this keeps it out of the way of the (now visible)
+  // right half in reversible mode and makes wires route cleanly downward.
+  const MCU_W = 4;      // long-axis width in U (was 2)
+  const MCU_H = 2;      // short-axis height in U (was 4)
+  const MCU_GAP = 1;    // gap between bottom row of keys and MCU top edge
+  const MCU_PIN_SPACING = MCU_W / 13; // spacing between pins on each long edge
+  // USB-C port silhouette on the LEFT short edge of the rotated MCU body.
   // Proportions follow the ceoloide nice_nano spec: ~7.4mm wide port on a
   // 17.78mm board, sticking ~1.5mm beyond the board edge.
-  const MCU_USB_W = 0.78;        // port width (U)
-  const MCU_USB_PROTRUDE = 0.18; // height of the port body sticking out above the board (U)
-  const MCU_USB_INSET = 0.32;    // depth of the port socket cavity into the body (U)
+  const MCU_USB_W = 0.78;        // port width (U) — the dimension along the short edge
+  const MCU_USB_PROTRUDE = 0.18; // how far the connector body sticks out past the edge (U)
+  const MCU_USB_INSET = 0.32;    // depth of the socket cavity into the body (U)
+
+  let schematicKeys = $derived(schematicVisibleKeys($layout));
 
   // Build row and column wire paths for schematic mode
   let rowWires = $derived.by(() => {
     if ($editorMode !== 'schematic') return [];
     const groups = new Map<number, { cx: number; cy: number }[]>();
-    for (const key of $layout.keys) {
+    for (const key of schematicKeys) {
       const cell = $matrix[key.id];
       if (!cell) continue;
       if (!groups.has(cell.row)) groups.set(cell.row, []);
@@ -52,7 +57,7 @@
   let colWires = $derived.by(() => {
     if ($editorMode !== 'schematic') return [];
     const groups = new Map<number, { cx: number; cy: number }[]>();
-    for (const key of $layout.keys) {
+    for (const key of schematicKeys) {
       const cell = $matrix[key.id];
       if (!cell) continue;
       if (!groups.has(cell.col)) groups.set(cell.col, []);
@@ -70,11 +75,15 @@
     return wires;
   });
 
-  // MCU position and wiring for schematic mode
+  // MCU position and wiring for schematic mode. The MCU is rendered rotated
+  // 90° CCW vs. the physical Pro Micro: long axis horizontal, USB on the
+  // left short edge. Pins map as follows:
+  //   - PRO_MICRO_PINS side='left'  → top edge (sideIndex 0 = leftmost)
+  //   - PRO_MICRO_PINS side='right' → bottom edge (sideIndex 0 = leftmost)
   let mcuData = $derived.by(() => {
     if ($editorMode !== 'schematic') return null;
 
-    const keys = $layout.keys;
+    const keys = schematicKeys;
     const mat = $matrix;
     if (keys.length === 0) return null;
 
@@ -89,19 +98,13 @@
       if (cy > maxY) maxY = cy;
     }
 
-    // Place MCU to the right of the keys
-    const mcuX = maxX + MCU_GAP + MCU_W / 2;
-    const mcuY = (minY + maxY) / 2;
-
-    // Get matrix dimensions
-    const rowSet = new Set<number>();
-    const colSet = new Set<number>();
-    for (const key of keys) {
-      const cell = mat[key.id];
-      if (cell) { rowSet.add(cell.row); colSet.add(cell.col); }
-    }
-    const rows = [...rowSet].sort((a, b) => a - b);
-    const cols = [...colSet].sort((a, b) => a - b);
+    // Place MCU centered horizontally below the keys.
+    const mcuX = (minX + maxX) / 2;
+    const mcuY = maxY + MCU_GAP + MCU_H / 2;
+    const mcuLeftX = mcuX - MCU_W / 2;
+    const mcuRightX = mcuX + MCU_W / 2;
+    const mcuTopY = mcuY - MCU_H / 2;
+    const mcuBottomY = mcuY + MCU_H / 2;
 
     // Use the store's pin assignments (auto + overrides)
     const pinAssignment = $pinAssignments;
@@ -110,9 +113,16 @@
       for (const p of pins) errorPins.add(p);
     }
 
-    // Build pin display list: label, side, y-position, net name, color
+    // Build pin display list: each pin is on either the top or bottom edge.
     const pinsPerSide = 12;
-    const pinList: { pin: number; label: string; gpio: boolean; side: 'left' | 'right'; y: number; net: string | null; netType: 'row' | 'col' | null; netIndex: number; hasError: boolean }[] = [];
+    type EdgePin = {
+      pin: number; label: string; gpio: boolean;
+      edge: 'top' | 'bottom';
+      x: number; y: number;
+      net: string | null; netType: 'row' | 'col' | null; netIndex: number;
+      hasError: boolean;
+    };
+    const pinList: EdgePin[] = [];
     for (const p of PRO_MICRO_PINS) {
       const net = pinAssignment[p.pin] ?? null;
       let netType: 'row' | 'col' | null = null;
@@ -121,13 +131,15 @@
         if (net.startsWith('ROW')) { netType = 'row'; netIndex = parseInt(net.slice(3)); }
         else if (net.startsWith('COL')) { netType = 'col'; netIndex = parseInt(net.slice(3)); }
       }
-      const py = mcuY - MCU_H / 2 + (p.sideIndex + 0.5) * (MCU_H / pinsPerSide);
-      pinList.push({ pin: p.pin, label: p.label, gpio: p.gpio, side: p.side, y: py, net, netType, netIndex, hasError: errorPins.has(p.pin) });
+      const edge: 'top' | 'bottom' = p.side === 'left' ? 'top' : 'bottom';
+      const px = mcuLeftX + (p.sideIndex + 0.5) * (MCU_W / pinsPerSide);
+      const py = edge === 'top' ? mcuTopY : mcuBottomY;
+      pinList.push({ pin: p.pin, label: p.label, gpio: p.gpio, edge, x: px, y: py, net, netType, netIndex, hasError: errorPins.has(p.pin) });
     }
 
-    // Build wires from row/col endpoints to MCU pins
-    // Row wires: find rightmost key center in each row, draw to MCU left pin
-    // Col wires: find bottommost key center in each col, draw down then across to MCU
+    // Endpoints for row/col groups inside the keys area.
+    // Row wires: pick the bottom-most key of each row (closest to MCU top).
+    // Col wires: pick the bottom-most key of each column (also closest).
     const rowEndpoints: Record<number, { x: number; y: number }> = {};
     const colEndpoints: Record<number, { x: number; y: number }> = {};
     for (const key of keys) {
@@ -135,7 +147,7 @@
       if (!cell) continue;
       const cx = key.x + key.width / 2;
       const cy = key.y + key.height / 2;
-      if (!rowEndpoints[cell.row] || cx > rowEndpoints[cell.row].x) {
+      if (!rowEndpoints[cell.row] || cy > rowEndpoints[cell.row].y) {
         rowEndpoints[cell.row] = { x: cx, y: cy };
       }
       if (!colEndpoints[cell.col] || cy > colEndpoints[cell.col].y) {
@@ -143,46 +155,42 @@
       }
     }
 
-    // MCU wires: connect each assigned pin to its row/col endpoint
-    const mcuWires: { points: string; netType: 'row' | 'col'; netIndex: number }[] = [];
-    const mcuLeftX = mcuX - MCU_W / 2;
-    const mcuRightX = mcuX + MCU_W / 2;
+    // Wire routing. Bus lines:
+    //   - aboveMcuY  : where all wires from keys converge before approaching the MCU.
+    //   - belowMcuY  : wraparound bus for bottom-edge pins, below the MCU body.
+    //   - sideX(L|R) : x just outside the left/right MCU edges for the wraparound.
+    const aboveMcuY = mcuTopY - 0.5;
+    const belowMcuY = mcuBottomY + 0.5;
 
+    const mcuWires: { points: string; netType: 'row' | 'col'; netIndex: number }[] = [];
     for (const pin of pinList) {
       if (!pin.net || !pin.netType) continue;
-      const pinTipX = pin.side === 'left' ? mcuLeftX : mcuRightX;
-      const pinTipY = pin.y;
+      const ep = pin.netType === 'row' ? rowEndpoints[pin.netIndex] : colEndpoints[pin.netIndex];
+      if (!ep) continue;
 
-      if (pin.netType === 'row') {
-        const ep = rowEndpoints[pin.netIndex];
-        if (!ep) continue;
-        // Route: endpoint -> right to align with MCU X -> then vertical to pin Y -> pin
-        const midX = pinTipX - 0.3;
-        const pts = [
-          `${ep.x * SCALE},${ep.y * SCALE}`,
-          `${midX * SCALE},${ep.y * SCALE}`,
-          `${midX * SCALE},${pinTipY * SCALE}`,
-          `${pinTipX * SCALE},${pinTipY * SCALE}`,
-        ];
-        mcuWires.push({ points: pts.join(' '), netType: 'row', netIndex: pin.netIndex });
+      const pts: string[] = [];
+      pts.push(`${ep.x * SCALE},${ep.y * SCALE}`);
+      // Down from key endpoint to the bus above the MCU.
+      pts.push(`${ep.x * SCALE},${aboveMcuY * SCALE}`);
+
+      if (pin.edge === 'top') {
+        // Cross to the pin's column on the top edge, then down to the pin.
+        pts.push(`${pin.x * SCALE},${aboveMcuY * SCALE}`);
+        pts.push(`${pin.x * SCALE},${pin.y * SCALE}`);
       } else {
-        const ep = colEndpoints[pin.netIndex];
-        if (!ep) continue;
-        // Route: endpoint -> down to below keys -> right to below MCU pin -> up to pin
-        const belowY = maxY + 1.5;
-        const midX = pinTipX - 0.3;
-        const pts = [
-          `${ep.x * SCALE},${ep.y * SCALE}`,
-          `${ep.x * SCALE},${belowY * SCALE}`,
-          `${midX * SCALE},${belowY * SCALE}`,
-          `${midX * SCALE},${pinTipY * SCALE}`,
-          `${pinTipX * SCALE},${pinTipY * SCALE}`,
-        ];
-        mcuWires.push({ points: pts.join(' '), netType: 'col', netIndex: pin.netIndex });
+        // Wrap around to the bottom edge: pick whichever side is closer.
+        const goLeft = pin.x < mcuX;
+        const sideX = goLeft ? mcuLeftX - 0.5 : mcuRightX + 0.5;
+        pts.push(`${sideX * SCALE},${aboveMcuY * SCALE}`);
+        pts.push(`${sideX * SCALE},${belowMcuY * SCALE}`);
+        pts.push(`${pin.x * SCALE},${belowMcuY * SCALE}`);
+        pts.push(`${pin.x * SCALE},${pin.y * SCALE}`);
       }
+
+      mcuWires.push({ points: pts.join(' '), netType: pin.netType, netIndex: pin.netIndex });
     }
 
-    return { mcuX, mcuY, pinList, mcuWires, mcuLeftX, mcuRightX };
+    return { mcuX, mcuY, pinList, mcuWires, mcuLeftX, mcuRightX, mcuTopY, mcuBottomY };
   });
 
   // Keys with duplicate (row,col) assignments
@@ -194,17 +202,72 @@
     return ids;
   });
 
+  /**
+   * When exactly one key is selected in schematic mode, highlight its
+   * entire row + column (wires, MCU pins) plus the other keys that share
+   * the row or column. Null when there's no salient selection.
+   */
+  let highlightedNets = $derived.by(() => {
+    if ($editorMode !== 'schematic') return null;
+    if ($selection.size !== 1) return null;
+    const id = [...$selection][0];
+    const cell = $matrix[id];
+    if (!cell) return null;
+    return { row: cell.row, col: cell.col };
+  });
+
+  /** IDs of keys that share a row or column with the schematic-selected key. */
+  let highlightedKeyIds = $derived.by(() => {
+    if (!highlightedNets) return new Set<string>();
+    const ids = new Set<string>();
+    for (const key of schematicKeys) {
+      const cell = $matrix[key.id];
+      if (!cell) continue;
+      if (cell.row === highlightedNets.row || cell.col === highlightedNets.col) {
+        ids.add(key.id);
+      }
+    }
+    return ids;
+  });
+
   let MM_PER_U = $derived(getSwitchGeometry($layout.switchType).mmPerU);
   /** Switch cutout side length in U coordinates (for plate-mode overlay). */
   let cutoutU = $derived(getSwitchGeometry($layout.switchType).cutoutSize / MM_PER_U);
 
-  // Auto-generate plate outlines when entering plate mode with none defined
+  // Auto-generate plate outlines when entering plate mode with none defined.
+  // Reversible mode collapses every key onto the left half (right-half keys
+  // are mirrored across the axis) so the canonical outline contains every
+  // switch + stabilizer footprint on either side.
   $effect(() => {
     if ($editorMode === 'plate' && $layout.plates.length === 0 && $layout.keys.length > 0) {
-      const result = generatePlateOutlines($layout.keys, undefined, $layout.switchType);
+      const sourceKeys = reversibleSourceKeys($layout);
+      if (sourceKeys.length === 0) return;
+      const result = generatePlateOutlines(sourceKeys, $layout.platePadding, $layout.switchType);
       setPlates(result.plates.map((verts) => ({ vertices: verts })));
     }
   });
+
+  /** Plates rendered on the canvas: left-of-axis only when reversible. */
+  let visiblePlates = $derived.by(() => {
+    if (!$layout.reversible) {
+      return $layout.plates.map((p, idx) => ({ plate: p, idx }));
+    }
+    const axisX = $layout.mirrorAxisX;
+    return $layout.plates
+      .map((plate, idx) => ({ plate, idx }))
+      .filter(({ plate }) => {
+        if (plate.vertices.length === 0) return false;
+        const cx = plate.vertices.reduce((s, v) => s + v.x, 0) / plate.vertices.length;
+        return cx < axisX;
+      });
+  });
+
+  /** Mirror a polygon ring across the layout's mirror axis. */
+  function mirrorPolygon(verts: { x: number; y: number }[]): { x: number; y: number }[] {
+    const axisX = $layout.mirrorAxisX;
+    // Reverse the order so the mirrored ring keeps a consistent winding.
+    return verts.map((v) => ({ x: axisX * 2 - v.x, y: v.y })).reverse();
+  }
 
   // --- Plate vertex state ---
   let draggingVertex = $state<{ plateIdx: number; vertexIdx: number } | null>(null);
@@ -279,13 +342,31 @@
 
   let svgEl: SVGSVGElement;
 
-  /** Compute the mirrored version of a key (matching layout store logic) */
-  function mirrorKey(source: Key): Key {
+  /**
+   * Compute the partner's projected position when the source moves. Matches
+   * the layout store's mirror sync: same-size pairs flip the full bounding
+   * box; size-unsynced pairs mirror centers and preserve the partner's own
+   * width/height.
+   */
+  function mirrorKey(source: Key, partner: Key): Key {
     const axisX = $layout.mirrorAxisX;
+    const syncSize = !($layout.mirrorSizeUnsynced?.[source.id]);
+    if (syncSize) {
+      return {
+        ...partner,
+        x: axisX * 2 - source.x - source.width,
+        y: source.y,
+        rotation: -source.rotation,
+        width: source.width,
+        height: source.height,
+      };
+    }
+    const srcCx = source.x + source.width / 2;
+    const srcCy = source.y + source.height / 2;
     return {
-      ...source,
-      x: axisX * 2 - source.x - source.width,
-      y: source.y,
+      ...partner,
+      x: axisX * 2 - srcCx - partner.width / 2,
+      y: srcCy - partner.height / 2,
       rotation: -source.rotation,
     };
   }
@@ -309,14 +390,18 @@
       if (partnerId && !movedIds.has(partnerId)) {
         const partner = allKeys.find((k) => k.id === partnerId);
         if (partner) {
-          mirroredPartners.push({ ...partner, ...mirrorKey(mk), id: partner.id });
+          mirroredPartners.push(mirrorKey(mk, partner));
           movedIds.add(partnerId);
         }
       }
     }
 
-    const allMoved = [...movedKeys, ...mirroredPartners];
-    const others = allKeys.filter((k) => !movedIds.has(k.id));
+    const isReal = (k: Key) => k.label.trim().length > 0;
+    // Empty-label keys are placeholders — they neither generate gap
+    // constraints on others nor block other keys' movement. Drop them
+    // from both sides of the check.
+    const allMoved = [...movedKeys, ...mirroredPartners].filter(isReal);
+    const others = allKeys.filter((k) => !movedIds.has(k.id) && isReal(k));
     return [allMoved, others];
   }
 
@@ -738,7 +823,7 @@
             const [allMoved, others] = buildGapCheckSets(movedKeys, allKeys, $layout.mirrorPairs);
             if (wouldViolateGap(allMoved, others, gap)) return;
           }
-          moveKeys(sel, dx, dy);
+          moveKeys(sel, dx, dy, dragState.keyId);
           lastSnappedU = { x: newX, y: newY };
         }
       } else {
@@ -758,6 +843,13 @@
     if (draggingVertex) {
       if (vertexDidDrag) {
         endContinuous();
+        // Auto-merge disjoint plates whose edits have caused them to
+        // overlap. Folds into the same undo step as the drag itself.
+        const wasMerged = mergePlateOverlaps({ pushUndo: false });
+        if (wasMerged) {
+          // Plates were renumbered; drop the now-stale vertex selection.
+          selectedVertices = new Set();
+        }
       } else if (vertexClickContext && !vertexClickContext.shiftKey) {
         // Click without drag (no shift): collapse selection to just this vertex.
         selectedVertices = new Set([vertexClickContext.vk]);
@@ -1025,6 +1117,21 @@
       }
       return;
     }
+
+    // Ctrl/Cmd+C → copy selection, Ctrl/Cmd+V → paste (layout mode only)
+    if ((e.ctrlKey || e.metaKey) && e.code === 'KeyC' && $editorMode === 'layout') {
+      const sel = $selection;
+      if (sel.size === 0) return;
+      e.preventDefault();
+      copySelection(sel);
+      return;
+    }
+    if ((e.ctrlKey || e.metaKey) && e.code === 'KeyV' && $editorMode === 'layout') {
+      e.preventDefault();
+      const pasted = pasteClipboard();
+      if (pasted.size > 0) selection.set(pasted);
+      return;
+    }
   }
 
   function onKeyUp(e: KeyboardEvent) {
@@ -1122,24 +1229,31 @@
     <!-- Schematic mode: row and column wires -->
     {#if $editorMode === 'schematic'}
       {@const focusRows = $schematicFocus === 'rows'}
+      {@const hasHighlight = highlightedNets !== null}
       <!-- Background wires (unfocused dimension): thin, dashed, faded -->
       {#each focusRows ? colWires : rowWires as wire}
+        {@const isHighlighted = hasHighlight && (('row' in wire ? wire.row === highlightedNets!.row : wire.col === highlightedNets!.col))}
+        {@const muted = hasHighlight && !isHighlighted}
         <polyline
           points={wire.points}
           fill="none"
-          stroke={secondaryColor('col' in wire ? wire.col : wire.row, 0.25)}
-          stroke-width={1.5 / $zoom}
-          stroke-dasharray="{6 / $zoom} {3 / $zoom}"
+          stroke={isHighlighted
+            ? primaryColor('col' in wire ? wire.col : wire.row, 1)
+            : secondaryColor('col' in wire ? wire.col : wire.row, muted ? 0.1 : 0.25)}
+          stroke-width={(isHighlighted ? 3.5 : 1.5) / $zoom}
+          stroke-dasharray={isHighlighted ? 'none' : `${6 / $zoom} ${3 / $zoom}`}
           pointer-events="none"
         />
       {/each}
       <!-- Foreground wires (focused dimension): thick, solid, vivid -->
       {#each focusRows ? rowWires : colWires as wire}
+        {@const isHighlighted = hasHighlight && (('row' in wire ? wire.row === highlightedNets!.row : wire.col === highlightedNets!.col))}
+        {@const muted = hasHighlight && !isHighlighted}
         <polyline
           points={wire.points}
           fill="none"
-          stroke={primaryColor('row' in wire ? wire.row : wire.col, 0.6)}
-          stroke-width={2.5 / $zoom}
+          stroke={primaryColor('row' in wire ? wire.row : wire.col, isHighlighted ? 1 : muted ? 0.2 : 0.6)}
+          stroke-width={(isHighlighted ? 4 : 2.5) / $zoom}
           pointer-events="none"
         />
       {/each}
@@ -1149,30 +1263,41 @@
         {@const S = MCU_H * SCALE / 12}
         <!-- MCU-to-matrix wires (behind MCU) -->
         {#each mcuData.mcuWires as wire}
+          {@const isHighlighted = hasHighlight && (
+            (wire.netType === 'row' && wire.netIndex === highlightedNets!.row) ||
+            (wire.netType === 'col' && wire.netIndex === highlightedNets!.col)
+          )}
+          {@const muted = hasHighlight && !isHighlighted}
           <polyline
             points={wire.points}
             fill="none"
-            stroke={wire.netType === 'row'
-              ? primaryColor(wire.netIndex, focusRows ? 0.5 : 0.2)
-              : primaryColor(wire.netIndex, focusRows ? 0.2 : 0.5)}
-            stroke-width={(wire.netType === 'row' ? (focusRows ? 2 : 1.2) : (focusRows ? 1.2 : 2)) / $zoom}
+            stroke={isHighlighted
+              ? primaryColor(wire.netIndex, 1)
+              : primaryColor(wire.netIndex, wire.netType === 'row'
+                ? (muted ? 0.15 : focusRows ? 0.5 : 0.2)
+                : (muted ? 0.15 : focusRows ? 0.2 : 0.5))}
+            stroke-width={(isHighlighted ? 3.5 : (wire.netType === 'row' ? (focusRows ? 2 : 1.2) : (focusRows ? 1.2 : 2))) / $zoom}
             stroke-dasharray={
-              (wire.netType === 'row' && !focusRows) || (wire.netType === 'col' && focusRows)
-                ? `${6 / $zoom} ${3 / $zoom}` : 'none'}
+              isHighlighted ? 'none' :
+              ((wire.netType === 'row' && !focusRows) || (wire.netType === 'col' && focusRows)
+                ? `${6 / $zoom} ${3 / $zoom}` : 'none')}
             pointer-events="none"
           />
         {/each}
 
-        {@const mcuTopY = (mcuData.mcuY - MCU_H / 2) * SCALE}
-        {@const mcuBottomY = (mcuData.mcuY + MCU_H / 2) * SCALE}
+        {@const mcuTopY = mcuData.mcuTopY * SCALE}
+        {@const mcuBottomY = mcuData.mcuBottomY * SCALE}
+        {@const mcuLeftX = mcuData.mcuLeftX * SCALE}
+        {@const mcuRightX = mcuData.mcuRightX * SCALE}
         {@const mcuMidX = mcuData.mcuX * SCALE}
+        {@const mcuMidY = mcuData.mcuY * SCALE}
         {@const usbHalfW = (MCU_USB_W / 2) * SCALE}
         {@const usbProtrude = MCU_USB_PROTRUDE * SCALE}
         {@const usbInset = MCU_USB_INSET * SCALE}
 
-        <!-- MCU body -->
+        <!-- MCU body (horizontal, long axis = X) -->
         <rect
-          x={mcuData.mcuLeftX * SCALE}
+          x={mcuLeftX}
           y={mcuTopY}
           width={MCU_W * SCALE}
           height={MCU_H * SCALE}
@@ -1182,33 +1307,32 @@
           stroke-width={S * 0.07}
           pointer-events="none"
         />
-        <!-- USB-C port: connector body protrudes above the top edge, the
-             socket cavity inside the body shows where the cable plugs in. -->
+        <!-- USB-C port: on the LEFT short edge, sticking out left. -->
         <rect
-          x={mcuMidX - usbHalfW}
-          y={mcuTopY - usbProtrude}
-          width={usbHalfW * 2}
-          height={usbProtrude + usbInset}
+          x={mcuLeftX - usbProtrude}
+          y={mcuMidY - usbHalfW}
+          width={usbProtrude + usbInset}
+          height={usbHalfW * 2}
           rx={S * 0.12}
           fill="#3a3a3a"
           stroke="#888"
           stroke-width={S * 0.06}
           pointer-events="none"
         />
-        <!-- USB-C inner cavity (the slot you plug a cable into) -->
+        <!-- USB-C inner cavity -->
         <rect
-          x={mcuMidX - usbHalfW * 0.7}
-          y={mcuTopY - usbProtrude * 0.5}
-          width={usbHalfW * 1.4}
-          height={usbProtrude * 0.5 + usbInset * 0.65}
+          x={mcuLeftX - usbProtrude * 0.5}
+          y={mcuMidY - usbHalfW * 0.7}
+          width={usbProtrude * 0.5 + usbInset * 0.65}
+          height={usbHalfW * 1.4}
           rx={S * 0.08}
           fill="#1a1a1a"
           pointer-events="none"
         />
         <!-- USB-C label -->
         <text
-          x={mcuMidX}
-          y={mcuTopY + usbInset * 0.5}
+          x={mcuLeftX + usbInset * 0.5}
+          y={mcuMidY}
           text-anchor="middle"
           dominant-baseline="middle"
           fill="#999"
@@ -1217,55 +1341,75 @@
           font-family="'JetBrains Mono', 'SF Mono', monospace"
           pointer-events="none"
         >USB-C</text>
-        <!-- MCU label (bottom of board) -->
+        <!-- MCU label (right side of board) -->
         <text
-          x={mcuMidX}
-          y={mcuBottomY - S * 0.55}
-          text-anchor="middle"
+          x={mcuRightX - S * 0.55}
+          y={mcuMidY}
+          text-anchor="end"
           dominant-baseline="middle"
           fill="#888"
           font-size={S * 0.42}
           font-weight="600"
           pointer-events="none"
-        >Pro Micro</text>
+        >{$layout.reversible ? 'Nice!Nano v2' : 'Pro Micro'}</text>
 
         <!-- MCU pins -->
         {#each mcuData.pinList as pin}
-          {@const px = (pin.side === 'left' ? mcuData.mcuLeftX : mcuData.mcuRightX) * SCALE}
+          {@const px = pin.x * SCALE}
           {@const py = pin.y * SCALE}
+          {@const isPinHighlighted = hasHighlight && (
+            (pin.netType === 'row' && pin.netIndex === highlightedNets!.row) ||
+            (pin.netType === 'col' && pin.netIndex === highlightedNets!.col)
+          )}
+          {@const pinMuted = hasHighlight && !isPinHighlighted && pin.net !== null}
           {@const pinColor = pin.hasError
             ? '#ff4444'
             : pin.netType === 'row'
-              ? primaryColor(pin.netIndex, focusRows ? 0.9 : 0.4)
+              ? primaryColor(pin.netIndex, isPinHighlighted ? 1 : pinMuted ? 0.2 : focusRows ? 0.9 : 0.4)
               : pin.netType === 'col'
-                ? primaryColor(pin.netIndex, focusRows ? 0.4 : 0.9)
+                ? primaryColor(pin.netIndex, isPinHighlighted ? 1 : pinMuted ? 0.2 : focusRows ? 0.4 : 0.9)
                 : '#555'}
+          <!-- Highlight ring behind the pin dot -->
+          {#if isPinHighlighted}
+            <circle
+              cx={px}
+              cy={py}
+              r={S * 0.35}
+              fill="none"
+              stroke={pinColor}
+              stroke-width={S * 0.08}
+              opacity="0.6"
+              pointer-events="none"
+            />
+          {/if}
           <!-- Pin dot -->
           <circle
             cx={px}
             cy={py}
-            r={S * 0.12}
+            r={isPinHighlighted ? S * 0.2 : S * 0.12}
             fill={pinColor}
             pointer-events="none"
           />
-          <!-- Pin label (inside MCU body): "<num> <label>" e.g. "5 D1" -->
+          <!-- Pin label (inside MCU body), vertical text along the pin axis -->
           <text
-            x={px + (pin.side === 'left' ? 1 : -1) * S * 0.25}
-            y={py}
-            text-anchor={pin.side === 'left' ? 'start' : 'end'}
+            x={px}
+            y={py + (pin.edge === 'top' ? 1 : -1) * S * 0.25}
+            text-anchor={pin.edge === 'top' ? 'start' : 'end'}
             dominant-baseline="middle"
+            transform={`rotate(90 ${px} ${py + (pin.edge === 'top' ? 1 : -1) * S * 0.25})`}
             fill={pin.net ? pinColor : '#888'}
             font-size={S * 0.32}
             font-family="'JetBrains Mono', 'SF Mono', monospace"
             pointer-events="none"
-          >{pin.side === 'left' ? `${pin.pin} ${pin.label}` : `${pin.label} ${pin.pin}`}</text>
+          >{`${pin.pin} ${pin.label}`}</text>
           <!-- Net label (outside MCU body) -->
           {#if pin.net}
             <text
-              x={px + (pin.side === 'left' ? -1 : 1) * S * 0.3}
-              y={py}
-              text-anchor={pin.side === 'left' ? 'end' : 'start'}
+              x={px}
+              y={py + (pin.edge === 'top' ? -1 : 1) * S * 0.3}
+              text-anchor={pin.edge === 'top' ? 'end' : 'start'}
               dominant-baseline="middle"
+              transform={`rotate(90 ${px} ${py + (pin.edge === 'top' ? -1 : 1) * S * 0.3})`}
               fill={pinColor}
               font-size={S * 0.35}
               font-weight="600"
@@ -1307,7 +1451,47 @@
 
     <!-- Plate outlines (plate mode) -->
     {#if $editorMode === 'plate'}
-      {#each $layout.plates as plate, pi}
+      <!-- Mirror ghosts: in reversible mode each visible plate is rendered
+           again on the opposite side of the axis, no handles, dashed, so the
+           user sees the right half but only edits the left. -->
+      {#if $layout.reversible}
+        {#each visiblePlates as { plate, idx: pi }}
+          {@const ghostVerts = mirrorPolygon(plate.vertices)}
+          {@const radius = $layout.plateCornerRadius}
+          {@const ghostFilleted = radius > 0 ? filletPolygon(ghostVerts, radius, undefined, MM_PER_U) : null}
+          <polygon
+            points={(ghostFilleted ?? ghostVerts).map(v => `${v.x * SCALE},${v.y * SCALE}`).join(' ')}
+            fill="rgba(74, 158, 255, 0.04)"
+            stroke="#4a9eff"
+            stroke-width={1 / $zoom}
+            stroke-dasharray={`${4 / $zoom} ${3 / $zoom}`}
+            opacity="0.55"
+            pointer-events="none"
+          />
+          {#each (resolvedScrews[pi] ?? []) as s}
+            <circle
+              cx={($layout.mirrorAxisX * 2 - s.x) * SCALE}
+              cy={s.y * SCALE}
+              r={6 / $zoom}
+              fill="none"
+              stroke="#4a9eff"
+              stroke-width={1 / $zoom}
+              opacity="0.4"
+              pointer-events="none"
+            />
+            <circle
+              cx={($layout.mirrorAxisX * 2 - s.x) * SCALE}
+              cy={s.y * SCALE}
+              r={1.5 / $zoom}
+              fill="white"
+              opacity="0.5"
+              pointer-events="none"
+            />
+          {/each}
+        {/each}
+      {/if}
+
+      {#each visiblePlates as { plate, idx: pi }}
         {@const verts = plate.vertices}
         {@const radius = $layout.plateCornerRadius}
         {@const filleted = radius > 0 ? filletPolygon(verts, radius, undefined, MM_PER_U) : null}
@@ -1381,7 +1565,9 @@
       <g
         opacity={$editorMode === 'plate' && $plateKeyDisplay === 'fade' ? 0.25 : 1}
       >
-        {#each $layout.keys as key (key.id)}
+        <!-- Empty-label keys render first so they sit behind real keys in
+             layout mode (and pick up the faded styling there). -->
+        {#each $layout.keys.filter((k) => !keyRendersOnPlate(k)) as key (key.id)}
           {@const cell = $matrix[key.id]}
           {@const focusIdx = cell ? ($schematicFocus === 'rows' ? cell.row : cell.col) : undefined}
           <KeyShape
@@ -1395,6 +1581,25 @@
             focusCols={$schematicFocus === 'cols'}
             groupColor={focusIdx !== undefined ? primaryColor(focusIdx) : undefined}
             hasError={errorKeyIds.has(key.id)}
+            faded={$editorMode === 'layout'}
+            onDragStart={onKeyDragStart}
+          />
+        {/each}
+        {#each $layout.keys.filter(keyRendersOnPlate) as key (key.id)}
+          {@const cell = $matrix[key.id]}
+          {@const focusIdx = cell ? ($schematicFocus === 'rows' ? cell.row : cell.col) : undefined}
+          <KeyShape
+            {key}
+            selected={$selection.has(key.id)}
+            linked={!!$layout.mirrorPairs[key.id]}
+            aligned={alignedKeyIds.has(key.id)}
+            schematic={$editorMode === 'schematic'}
+            interactive={$editorMode !== 'plate'}
+            matrixCell={cell}
+            focusCols={$schematicFocus === 'cols'}
+            groupColor={focusIdx !== undefined ? primaryColor(focusIdx) : undefined}
+            hasError={errorKeyIds.has(key.id)}
+            highlighted={highlightedKeyIds.has(key.id)}
             onDragStart={onKeyDragStart}
           />
         {/each}
@@ -1405,7 +1610,7 @@
     {#if $editorMode === 'plate'}
       {@const plateGeometry = getSwitchGeometry($layout.switchType)}
       {@const mmToPx = SCALE / plateGeometry.mmPerU}
-      {#each $layout.keys as key (key.id)}
+      {#each $layout.keys.filter(keyRendersOnPlate) as key (key.id)}
         {@const kcx = (key.x + key.width / 2) * SCALE}
         {@const kcy = (key.y + key.height / 2) * SCALE}
         {@const half = (cutoutU / 2) * SCALE}

@@ -10,7 +10,7 @@
 import type { Layout } from '../types';
 import { keyStabilizer, stabilizerSizeLabel, STABILIZER_SIZE_ORDER, type StabilizerSize } from './stabilizers';
 import { SWITCH_TYPE_LABELS } from './switchGeometry';
-import { resolvePlateScrewsU } from './exportStl';
+import { resolvePlateScrewsU, keyRendersOnPlate } from './exportStl';
 
 const ITEM_COL_WIDTH = 32;
 
@@ -33,7 +33,19 @@ export function exportShoppingList(layout: Layout): string {
   lines.push(`Generated: ${today}`);
   lines.push('');
 
-  const keyCount = layout.keys.length;
+  const reversible = layout.reversible === true;
+  // In reversible mode, `sides` filters which physical halves install a
+  // switch at each layout position. Unspecified means both sides install.
+  // Empty-label keys are treated as placeholders with no switch installed.
+  function keyInstallsCount(k: Layout['keys'][number]): number {
+    if (!keyRendersOnPlate(k)) return 0;
+    if (!reversible) return 1;
+    const sides = k.sides ?? ['L', 'R'];
+    return sides.length;
+  }
+  const keyCount = reversible
+    ? layout.keys.reduce((sum, k) => sum + keyInstallsCount(k), 0)
+    : layout.keys.filter(keyRendersOnPlate).length;
   const switchLabel = SWITCH_TYPE_LABELS[layout.switchType ?? 'mx'];
 
   lines.push('Switches');
@@ -48,7 +60,10 @@ export function exportShoppingList(layout: Layout): string {
       if (!stab) continue;
       const label = stabilizerSizeLabel(stab.size);
       if (!label) continue;
-      stabCounts.set(label, (stabCounts.get(label) ?? 0) + 1);
+      // Reversible: a wide key with sides=['L','R'] installs stabs on both
+      // halves; sides=['L'] only the left half, etc.
+      const installs = keyInstallsCount(key);
+      stabCounts.set(label, (stabCounts.get(label) ?? 0) + installs);
     }
   }
 
@@ -68,7 +83,17 @@ export function exportShoppingList(layout: Layout): string {
   if (layout.hotswap) {
     lines.push(row('Kailh hot-swap sockets', keyCount));
   }
-  lines.push(row('Pro Micro (or compatible MCU)', 1));
+  if (reversible) {
+    // Two identical PCBs, two MCUs, plus per-half power circuitry.
+    lines.push(row('nice!nano (MCU, BLE)', 2));
+    lines.push(row('Reversible PCB (fab both halves)', 2));
+    lines.push(row('LiPo battery (301230 or compatible)', 2));
+    lines.push(row('JST-PH 2-pin pigtail', 2));
+    lines.push(row('SPDT slide switch (SS-12D00)', 2));
+    lines.push(row('6mm tactile reset button', 2));
+  } else {
+    lines.push(row('Pro Micro (or compatible MCU)', 1));
+  }
   lines.push('');
 
   let totalScrews = 0;

@@ -19,7 +19,10 @@ function baseLayout(overrides: Partial<Layout> = {}): Layout {
 }
 
 function makeKey(overrides: Partial<Key> = {}): Key {
-  return { id: Math.random().toString(36), x: 0, y: 0, rotation: 0, width: 1, height: 1, label: '', ...overrides };
+  // Default to a non-empty label so the key counts as an installed switch
+  // (empty-label keys are treated as phantom positions with no plate hole
+  // / no BOM entry).
+  return { id: Math.random().toString(36), x: 0, y: 0, rotation: 0, width: 1, height: 1, label: 'K', ...overrides };
 }
 
 describe('exportShoppingList', () => {

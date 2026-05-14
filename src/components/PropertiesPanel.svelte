@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { layout, updateKeysWithUndo, linkMirrorPair, unlinkMirrorPair, enforceMinGap, createAlignmentGroup, removeAlignmentGroup, removeKeysFromAlignment } from '../stores/layout';
+  import { layout, updateKeysWithUndo, linkMirrorPair, unlinkMirrorPair, enforceMinGap, createAlignmentGroup, removeAlignmentGroup, removeKeysFromAlignment, setMirroredMode, setMirrorSizeSync } from '../stores/layout';
   import { selection, minGap } from '../stores/editor';
   import type { Key } from '../types';
 
@@ -25,6 +25,27 @@
   let sharedX = $derived(sharedValue((k) => k.x));
   let sharedY = $derived(sharedValue((k) => k.y));
   let sharedRotation = $derived(sharedValue((k) => k.rotation));
+
+  // 'both' | 'L' | 'R' | undefined (mixed)
+  function keySidesMode(k: Key): 'both' | 'L' | 'R' {
+    const s = k.sides;
+    if (!s) return 'both';
+    if (s.includes('L') && s.includes('R')) return 'both';
+    if (s.includes('L')) return 'L';
+    if (s.includes('R')) return 'R';
+    return 'both';
+  }
+  let sharedSides = $derived(sharedValue(keySidesMode));
+  let reversible = $derived($layout.reversible === true);
+  let mirrored = $derived($layout.mirrored === true);
+
+  function setSidesMode(mode: 'both' | 'L' | 'R') {
+    const ids = $selection;
+    if (ids.size === 0) return;
+    const sides: ('L' | 'R')[] | undefined =
+      mode === 'both' ? undefined : mode === 'L' ? ['L'] : ['R'];
+    updateKeysWithUndo(ids, { sides });
+  }
 
   function onInput(field: keyof Omit<Key, 'id'>, raw: string) {
     const ids = $selection;
@@ -155,16 +176,50 @@
       />
     </div>
 
+    {#if reversible}
+      <div class="field">
+        <span class="seg-label">Render on</span>
+        <div class="seg-control">
+          <button
+            class="seg-btn"
+            class:active={sharedSides === 'L'}
+            onclick={() => setSidesMode('L')}
+          >Left</button>
+          <button
+            class="seg-btn"
+            class:active={sharedSides === 'R'}
+            onclick={() => setSidesMode('R')}
+          >Right</button>
+          <button
+            class="seg-btn"
+            class:active={sharedSides === 'both'}
+            onclick={() => setSidesMode('both')}
+          >Both</button>
+        </div>
+      </div>
+    {/if}
+
     <!-- Mirror pair controls -->
     {#if count === 2}
       {@const ids = [...$selection]}
       {@const areLinked = $layout.mirrorPairs[ids[0]] === ids[1]}
       <div class="mirror-section">
         {#if areLinked}
-          <button class="mirror-btn unlink" onclick={() => unlinkMirrorPair(ids[0])}>
-            Unlink Mirror Pair
-          </button>
-        {:else}
+          {@const sizeSynced = !$layout.mirrorSizeUnsynced?.[ids[0]]}
+          <label class="mirror-sync-row">
+            <input
+              type="checkbox"
+              checked={sizeSynced}
+              onchange={(e) => setMirrorSizeSync(ids[0], e.currentTarget.checked)}
+            />
+            <span>Sync size with mirror</span>
+          </label>
+          {#if !mirrored}
+            <button class="mirror-btn unlink" onclick={() => unlinkMirrorPair(ids[0])}>
+              Unlink Mirror Pair
+            </button>
+          {/if}
+        {:else if !mirrored}
           <button class="mirror-btn" onclick={() => linkMirrorPair(ids[0], ids[1])}>
             Link as Mirror Pair
           </button>
@@ -175,14 +230,25 @@
       {@const partnerId = $layout.mirrorPairs[keyId]}
       {#if partnerId}
         {@const partner = $layout.keys.find((k) => k.id === partnerId)}
+        {@const sizeSynced = !$layout.mirrorSizeUnsynced?.[keyId]}
         <div class="mirror-section">
           <div class="mirror-info">
             <span class="mirror-label">Mirror of</span>
             <span class="mirror-partner">{partner?.label || '(unlabeled)'}</span>
           </div>
-          <button class="mirror-btn unlink" onclick={() => unlinkMirrorPair(keyId)}>
-            Unlink
-          </button>
+          <label class="mirror-sync-row">
+            <input
+              type="checkbox"
+              checked={sizeSynced}
+              onchange={(e) => setMirrorSizeSync(keyId, e.currentTarget.checked)}
+            />
+            <span>Sync size with mirror</span>
+          </label>
+          {#if !mirrored}
+            <button class="mirror-btn unlink" onclick={() => unlinkMirrorPair(keyId)}>
+              Unlink
+            </button>
+          {/if}
         </div>
       {/if}
     {/if}
@@ -218,6 +284,14 @@
 
   <div class="settings-section">
     <h2>Settings</h2>
+    <label class="mirror-sync-row">
+      <input
+        type="checkbox"
+        checked={mirrored}
+        onchange={(e) => setMirroredMode(e.currentTarget.checked)}
+      />
+      <span>Mirrored mode</span>
+    </label>
     <div class="field">
       <label for="setting-min-gap">Min Gap (mm)</label>
       <input
@@ -302,6 +376,63 @@
   input::placeholder {
     color: #555;
     font-style: italic;
+  }
+
+  .seg-label {
+    font-size: 11px;
+    color: #888;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+  }
+
+  .seg-control {
+    display: flex;
+    gap: 0;
+    border: 1px solid #444;
+    border-radius: 4px;
+    overflow: hidden;
+  }
+
+  .seg-btn {
+    flex: 1;
+    background: #2a2a2a;
+    border: none;
+    border-right: 1px solid #444;
+    color: #ccc;
+    padding: 5px 6px;
+    font-size: 12px;
+    font-family: inherit;
+    cursor: pointer;
+  }
+
+  .seg-btn:last-child {
+    border-right: none;
+  }
+
+  .seg-btn.active {
+    background: #4a9eff;
+    color: #111;
+  }
+
+  .seg-btn:hover:not(.active) {
+    background: #333;
+  }
+
+  .mirror-sync-row {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    margin-bottom: 8px;
+    font-size: 12px;
+    color: #ccc;
+    text-transform: none;
+    letter-spacing: 0;
+    cursor: pointer;
+  }
+
+  .mirror-sync-row input {
+    width: auto;
+    margin: 0;
   }
 
   .mirror-section {

@@ -2,7 +2,7 @@ import type { Key, Layout, PlateOutline } from '../../types';
 import type { MatrixMap } from '../matrix';
 import { PRO_MICRO_PINS, assignPinsToMatrix, applyPinOverrides } from './proMicro';
 import { filletPolygon } from '../plate';
-import { screwHoleCenters, switchCutoutRing, SCREW_HOLE_DIAMETER } from '../exportStl';
+import { screwHoleCenters, SCREW_HOLE_DIAMETER, plateScrewObstacles, platesSide } from '../exportStl';
 import { getSwitchGeometry, type SwitchGeometry } from '../switchGeometry';
 import { MCU_BOARD } from '../mcu';
 import { emitSwitchGateronKs27Ks33 } from '../footprints/switch_gateron_ks27_ks33';
@@ -14,7 +14,10 @@ import {
   type NiceNanoParams,
   type NamedPin,
 } from '../footprints/mcu_nice_nano';
-import type { FootprintContext } from '../footprints/shared';
+import { emitJstPh2 } from '../footprints/battery_jst_ph_2';
+import { emitSlideSwitchSpdt } from '../footprints/slide_switch_spdt';
+import { emitResetButton } from '../footprints/button_reset';
+import type { FootprintContext, NetRef } from '../footprints/shared';
 import type { SwitchType } from '../switchGeometry';
 
 /** Switch types whose PCB footprint comes from ceoloide's switch_mx.js. */
@@ -122,7 +125,11 @@ interface PlacedKey {
   bridgeNet: NetInfo;
 }
 
-function emitDiodeFootprintNew(pk: PlacedKey, geometry: SwitchGeometry): string {
+function emitDiodeFootprintNew(
+  pk: PlacedKey,
+  geometry: SwitchGeometry,
+  reversible: boolean,
+): string {
   const { xMm, yMm, rotation, index, colNet, bridgeNet } = pk;
   // Rotate the diode offset so the diode follows the switch's rotation (the
   // offset is defined in the switch's local frame). App convention is Y-down
@@ -132,6 +139,12 @@ function emitDiodeFootprintNew(pk: PlacedKey, geometry: SwitchGeometry): string 
   const sin = Math.sin(rad);
   const ox = geometry.diodeOffset.x;
   const oy = geometry.diodeOffset.y;
+  // include_tht adds plated through-holes alongside the SMD pads so users
+  // can route on either Cu layer and hand-solder a regular 1N4148 if they
+  // don't want SMD. Reversible boards additionally need ceoloide's
+  // "thru_hole_smd_pads" mode so the SMD pads themselves become drilled —
+  // otherwise the pads only exist on one layer and the flipped half loses
+  // its diode pads.
   return emitDiode({
     position: { x: r(xMm + ox * cos - oy * sin), y: r(yMm + ox * sin + oy * cos) },
     rotation,
@@ -140,6 +153,10 @@ function emitDiodeFootprintNew(pk: PlacedKey, geometry: SwitchGeometry): string 
     cathodeNet: colNet,
     anodeNet: bridgeNet,
     uid,
+  }, {
+    reversible,
+    include_tht: true,
+    include_thru_hole_smd_pads: reversible,
   });
 }
 
@@ -160,6 +177,10 @@ function emitMcuFootprint(
   x: number,
   y: number,
   pinNets: Record<number, NetInfo>,
+  options: { reversible: boolean; localNet: (key: string) => NetRef } = {
+    reversible: false,
+    localNet: () => ({ id: 0, name: '' }),
+  },
 ): string {
   // Build ceoloide-named pin params from our pin-number-keyed assignment.
   // Pro Micro labels override ceoloide's nRF52-style defaults so the silk
@@ -179,14 +200,19 @@ function emitMcuFootprint(
     // route matrix nets to GND.
     (params as Record<string, NamedPin>)[name as string] = pin;
   }
+  if (options.reversible) {
+    // Only the top 4 rows (RAW/GND/RST/VCC) need jumpers; matrix GPIO pins
+    // can be remapped in firmware to compensate for the mirror, so leave
+    // them direct.
+    params.reversible = true;
+    params.only_required_jumpers = true;
+  }
   return emitMcuNiceNano({
     position: { x, y },
     rotation: 0,
     ref: 'U1',
     uid,
-    // Non-reversible boards don't need local jumper nets; return a stable
-    // unconnected ref so accidental calls don't crash.
-    localNet: () => ({ id: 0, name: '' }),
+    localNet: options.localNet,
   }, params);
 }
 
@@ -301,11 +327,19 @@ export function exportKicadPcb(layout: Layout, matrixMap: MatrixMap): string {
   _uid = 0;
   const geometry = getSwitchGeometry(layout.switchType);
   const U_MM = geometry.mmPerU;
+  const reversible = layout.reversible === true;
+
+  // Reversible mode: emit only the left half (keys whose center sits to the
+  // left of the mirror axis). The user fabs two boards from the single
+  // design; flipping the second gives them the right half.
+  const exportedKeys = reversible
+    ? layout.keys.filter((k) => k.x + k.width / 2 < layout.mirrorAxisX)
+    : layout.keys;
 
   // Determine matrix dimensions
   const rowSet = new Set<number>();
   const colSet = new Set<number>();
-  for (const key of layout.keys) {
+  for (const key of exportedKeys) {
     const cell = matrixMap[key.id];
     if (cell) {
       rowSet.add(cell.row);
@@ -332,7 +366,7 @@ export function exportKicadPcb(layout: Layout, matrixMap: MatrixMap): string {
   }
 
   // Sort keys by matrix position for consistent numbering
-  const entries = layout.keys
+  const entries = exportedKeys
     .map((key) => ({ key, cell: matrixMap[key.id] }))
     .filter((e) => e.cell)
     .sort((a, b) => a.cell!.row !== b.cell!.row ? a.cell!.row - b.cell!.row : a.cell!.col - b.cell!.col);
@@ -369,6 +403,43 @@ export function exportKicadPcb(layout: Layout, matrixMap: MatrixMap): string {
     if (net) pinNets[pin] = net;
   }
 
+  // Extra nets needed for reversible-mode jumpers and power circuitry.
+  // These are allocated lazily so non-reversible exports keep their net
+  // numbering stable.
+  let gndNet: NetInfo | undefined;
+  let batPlusNet: NetInfo | undefined;
+  let rawNet: NetInfo | undefined;
+  let rstNet: NetInfo | undefined;
+  const localNetCache = new Map<string, NetInfo>();
+  function makeNet(name: string): NetInfo {
+    const existing = nets.find((n) => n.name === name);
+    if (existing) return existing;
+    const net: NetInfo = { id: nets.length, name };
+    nets.push(net);
+    return net;
+  }
+  function localNet(key: string): NetInfo {
+    const cached = localNetCache.get(key);
+    if (cached) return cached;
+    const net = makeNet(`LOCAL_${key}_${localNetCache.size}`);
+    localNetCache.set(key, net);
+    return net;
+  }
+  if (reversible) {
+    gndNet = makeNet('GND');
+    batPlusNet = makeNet('BAT+');
+    rawNet = makeNet('RAW');
+    rstNet = makeNet('RST');
+    // Wire MCU power pins to the new nets so the Nice!Nano footprint
+    // labels and reversible jumpers reference the same nets the battery /
+    // switch / reset circuit uses.
+    for (const p of PRO_MICRO_PINS) {
+      if (p.label === 'GND') pinNets[p.pin] = gndNet;
+      else if (p.label === 'RAW') pinNets[p.pin] = rawNet;
+      else if (p.label === 'RST') pinNets[p.pin] = rstNet;
+    }
+  }
+
   // Place Pro Micro above the key area. The MCU origin is the geometric
   // center of the board outline (per ceoloide), so offset by `-bottom` to
   // put the bottom edge ~20mm above the keys.
@@ -384,25 +455,23 @@ export function exportKicadPcb(layout: Layout, matrixMap: MatrixMap): string {
     pmY = r(minY - 20 - MCU_BOARD.bottom);
   }
 
-  // Build the PCB file
-  const lines: string[] = [];
-  lines.push(`(kicad_pcb
-  (version 20221018)
-  (generator "keyboard-builder")
-  (general
-    (thickness 1.6)
-  )
-  (paper "A3")`);
+  // Reversible-mode power circuitry sits above the MCU along the same
+  // vertical line, fixed offsets. Users can drag in KiCad if they want
+  // something different.
+  const powerX = pmX;
+  // The MCU top edge (in board coords) is at pmY + MCU_BOARD.top (top is
+  // negative). Stack JST / slide switch / reset button above that with
+  // 6mm spacing.
+  const mcuTopY = pmY + MCU_BOARD.top;
+  const batteryY = r(mcuTopY - 6);
+  const switchY = r(batteryY - 6);
+  const resetY = r(switchY - 8);
 
-  lines.push(layers());
-  lines.push(setup());
-  lines.push('');
-
-  // Net declarations
-  for (const net of nets) {
-    lines.push(`  (net ${net.id} "${net.name}")`);
-  }
-  lines.push('');
+  // Collect footprint output first so any local nets allocated during
+  // emission (e.g. ceoloide's reversible Nice!Nano jumper bridges) make it
+  // into the net declarations below before the s-expressions that
+  // reference them get written.
+  const footprintLines: string[] = [];
 
   // Key footprints
   const hotswap = layout.hotswap === true;
@@ -424,69 +493,136 @@ export function exportKicadPcb(layout: Layout, matrixMap: MatrixMap): string {
     // Map layout.hotswap to ceoloide's hotswap/solder pair as mutually
     // exclusive — both modes use through-holes at different positions, so
     // emitting both would stack four holes per switch.
-    const ceoloideMode = { hotswap, solder: !hotswap };
+    // Reversible mode: ceoloide emits both F.Cu and B.Cu hotswap pads, so
+    // the same fab works for either half once flipped.
+    const ceoloideMode = { hotswap, solder: !hotswap, reversible };
     if (switchType === 'gateron-low-profile') {
-      lines.push(emitSwitchGateronKs27Ks33(ctx, ceoloideMode));
+      footprintLines.push(emitSwitchGateronKs27Ks33(ctx, ceoloideMode));
     } else if (switchType === 'choc-v2') {
       // Choc V2 only: disable the V1-specific lateral stabilizer holes.
-      lines.push(emitSwitchChocV1V2(ctx, {
+      footprintLines.push(emitSwitchChocV1V2(ctx, {
         ...ceoloideMode,
         choc_v1_support: false,
       }));
     } else if (MX_FAMILY.has(switchType)) {
-      lines.push(emitSwitchMx(ctx, ceoloideMode));
+      footprintLines.push(emitSwitchMx(ctx, ceoloideMode));
     } else {
       // Exhaustive over SwitchType: adding a new variant should add a
       // dispatch arm above, not fall through here.
       throw new Error(`No PCB footprint emitter registered for switch type "${switchType}"`);
     }
-    lines.push(emitDiodeFootprintNew(pk, geometry));
+    footprintLines.push(emitDiodeFootprintNew(pk, geometry, reversible));
   }
 
   // Pro Micro footprint
-  lines.push(emitMcuFootprint(pmX, pmY, pinNets));
-  lines.push('');
+  footprintLines.push(emitMcuFootprint(pmX, pmY, pinNets, {
+    reversible,
+    localNet: (key) => localNet(key),
+  }));
+
+  if (reversible && gndNet && batPlusNet && rawNet && rstNet) {
+    // Battery + → slide switch common; slide switch output → RAW.
+    // Battery − → GND. Reset button shorts RST to GND when pressed.
+    footprintLines.push(emitJstPh2({
+      position: { x: powerX, y: batteryY },
+      rotation: 0,
+      ref: 'J1',
+      uid,
+      vccNet: batPlusNet,
+      gndNet: gndNet,
+    }));
+    footprintLines.push(emitSlideSwitchSpdt({
+      position: { x: powerX, y: switchY },
+      rotation: 0,
+      ref: 'SW_PWR',
+      uid,
+      commonNet: batPlusNet,
+      outputNet: rawNet,
+    }));
+    footprintLines.push(emitResetButton({
+      position: { x: powerX, y: resetY },
+      rotation: 0,
+      ref: 'SW_RST',
+      uid,
+      netA: rstNet,
+      netB: gndNet,
+    }));
+  }
 
   // Board outline: when plate outlines are defined, the PCB matches them
   // exactly and includes mounting holes at the same positions as the plates'
   // screws. Otherwise, fall back to a convex hull of keys + Pro Micro.
-  const plates = layout.plates ?? [];
+  // Reversible mode emits a single board (the left half), so plates whose
+  // centroid sits to the right of the mirror axis are dropped — the
+  // physical right half is the same fab flipped.
+  const allPlates = layout.plates ?? [];
+  const plates = reversible
+    ? allPlates.filter((p) => {
+        if (p.vertices.length === 0) return false;
+        const cx = p.vertices.reduce((s, v) => s + v.x, 0) / p.vertices.length;
+        return cx < layout.mirrorAxisX;
+      })
+    : allPlates;
+  const outlineLines: string[] = [];
   if (plates.length > 0) {
     for (const plate of plates) {
       const outline = plateOutlineMm(plate, layout.plateCornerRadius ?? 0, U_MM);
       if (outline.length < 3) continue;
-      lines.push(emitBoardOutline(outline));
+      outlineLines.push(emitBoardOutline(outline));
 
       const outerMm = outline.map((v) => [v.x, v.y] as [number, number]);
-      const switchCutouts = layout.keys
-        .filter((k) => {
-          const kcx = (k.x + k.width / 2) * U_MM;
-          const kcy = (k.y + k.height / 2) * U_MM;
-          // pointInRing without dependency: cheap inside test against the polygon
-          let inside = false;
-          for (let i = 0, j = outerMm.length - 1; i < outerMm.length; j = i++) {
-            const [xi, yi] = outerMm[i];
-            const [xj, yj] = outerMm[j];
-            const hit = yi > kcy !== yj > kcy && kcx < ((xj - xi) * (kcy - yi)) / (yj - yi) + xi;
-            if (hit) inside = !inside;
-          }
-          return inside;
-        })
-        .map((k) => switchCutoutRing(k, geometry));
+      // Use the shared plate-obstacle helper so reversible mounting holes
+      // also avoid the mirrored opposite-half keys (the same fab serves
+      // both halves; a screw must clear switches in both orientations).
+      const obstaclePlateSide = reversible
+        ? platesSide(
+            layout.plateCornerRadius > 0
+              ? filletPolygon(plate.vertices, layout.plateCornerRadius, undefined, U_MM)
+              : plate.vertices,
+            layout.mirrorAxisX,
+          )
+        : undefined;
+      const switchCutouts = plateScrewObstacles(layout, outerMm, obstaclePlateSide, geometry);
       const screwPositions: [number, number][] = plate.screws
         ? plate.screws.map((s) => [s.x * U_MM, s.y * U_MM])
         : screwHoleCenters(outerMm, switchCutouts);
       for (const [sx, sy] of screwPositions) {
-        lines.push(emitMountingHole(sx, sy));
+        outlineLines.push(emitMountingHole(sx, sy));
       }
     }
   } else {
     const pmPos = placedKeys.length > 0 ? { x: pmX, y: pmY } : undefined;
     const hull = computeBoardOutline(placedKeys, U_MM, pmPos);
     if (hull.length >= 3) {
-      lines.push(emitBoardOutline(hull));
+      outlineLines.push(emitBoardOutline(hull));
     }
   }
+
+  // Assemble the file. Net declarations are written after every footprint
+  // has had a chance to allocate the local nets it references (chiefly the
+  // reversible Nice!Nano's jumper bridges), so the declarations stay
+  // consistent with the IDs used by the pads below.
+  const lines: string[] = [];
+  lines.push(`(kicad_pcb
+  (version 20221018)
+  (generator "keyboard-builder")
+  (general
+    (thickness 1.6)
+  )
+  (paper "A3")`);
+
+  lines.push(layers());
+  lines.push(setup());
+  lines.push('');
+
+  for (const net of nets) {
+    lines.push(`  (net ${net.id} "${net.name}")`);
+  }
+  lines.push('');
+
+  lines.push(...footprintLines);
+  lines.push('');
+  lines.push(...outlineLines);
 
   lines.push(')');
   return lines.join('\n');

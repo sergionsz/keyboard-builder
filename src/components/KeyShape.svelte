@@ -5,7 +5,7 @@
 
   const GAP = 2;    // px gap between key border and edge of cell
 
-  let { key, selected = false, linked = false, aligned = false, schematic = false, interactive = true, matrixCell, focusCols = false, groupColor, hasError = false, onDragStart }: {
+  let { key, selected = false, linked = false, aligned = false, schematic = false, interactive = true, matrixCell, focusCols = false, groupColor, hasError = false, faded = false, highlighted = false, onDragStart }: {
     key: Key;
     selected?: boolean;
     linked?: boolean;
@@ -16,6 +16,8 @@
     focusCols?: boolean;
     groupColor?: string;
     hasError?: boolean;
+    faded?: boolean;
+    highlighted?: boolean;
     onDragStart?: (keyId: string, e: PointerEvent) => void;
   } = $props();
 
@@ -41,8 +43,21 @@
   transform="rotate({key.rotation}, {centerX}, {centerY})"
   class="key-group"
   class:key-group-inert={!interactive}
+  class:key-group-faded={faded}
   onpointerdown={handlePointerDown}
 >
+  {#if highlighted && !selected}
+    <!-- Schematic row/col highlight: a softer outline beneath the key -->
+    <rect
+      x={cx + GAP - 3}
+      y={cy + GAP - 3}
+      width={w - GAP * 2 + 6}
+      height={h - GAP * 2 + 6}
+      rx="6"
+      ry="6"
+      class="key-highlight"
+    />
+  {/if}
   {#if selected}
     <!-- Selection highlight behind the key -->
     <rect
@@ -174,11 +189,21 @@
     pointer-events: none;
   }
 
+  .key-group-faded {
+    opacity: 0.35;
+  }
+
   .key-selection {
     fill: none;
     stroke: #4a9eff;
     stroke-width: 2;
     stroke-dasharray: none;
+  }
+
+  .key-highlight {
+    fill: rgba(74, 158, 255, 0.18);
+    stroke: rgba(74, 158, 255, 0.6);
+    stroke-width: 2;
   }
 
   .key-border {

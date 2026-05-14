@@ -50,7 +50,7 @@ describe('URL serialize/deserialize (v2 binary)', () => {
       ],
     });
     const hash = serializeLayout(layout);
-    expect(hash.charAt(0)).toBe('8'); // v8 prefix
+    expect(hash.charAt(0)).toBe('9'); // v9 prefix
     const restored = deserializeLayout(hash);
     expect(restored).not.toBeNull();
     expect(restored!.name).toBe('My Board');
