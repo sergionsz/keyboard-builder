@@ -1,7 +1,8 @@
 import polygonClipping from 'polygon-clipping';
-import type { Pair, Ring, MultiPolygon } from 'polygon-clipping';
+import type { Pair, Ring, MultiPolygon, Polygon } from 'polygon-clipping';
 import type { Key, Layout, PlateOutline, SwitchType } from '../types';
 import { getSwitchGeometry } from './switchGeometry';
+import { stabilizerCutoutRings } from './stabilizers';
 
 const MX_MM_PER_U = getSwitchGeometry(undefined).mmPerU;
 
@@ -193,6 +194,142 @@ export function generatePlateOutlines(
   });
 
   return { plates };
+}
+
+/**
+ * Plate containment issues for a single key in Plate mode.
+ *
+ * `cutoutOutside` covers the parts of the switch (and stabilizer) cutout
+ * that fall outside every plate; these are real errors — the switch will
+ * not fit. `paddingOutside` covers the parts of the padded key footprint
+ * that fall outside, which can be a softer warning: the cutout itself may
+ * still be inside, but the user-requested padding margin around the key is
+ * not maintained.
+ */
+export interface PlateKeyIssue {
+  keyId: string;
+  cutoutOutside: OutlineRing[];
+  paddingOutside: OutlineRing[];
+}
+
+function rotatedRectCorners(
+  cx: number, cy: number, hw: number, hh: number, rotationDeg: number,
+): [number, number][] {
+  const corners: [number, number][] = [
+    [cx - hw, cy - hh],
+    [cx + hw, cy - hh],
+    [cx + hw, cy + hh],
+    [cx - hw, cy + hh],
+  ];
+  if (rotationDeg === 0) return corners;
+  return corners.map(([x, y]) => rotatePoint(x, y, cx, cy, rotationDeg));
+}
+
+function closeRing(corners: [number, number][]): Ring {
+  const ring: Pair[] = corners.map(([x, y]) => [x, y]);
+  ring.push([ring[0][0], ring[0][1]]);
+  return ring as Ring;
+}
+
+function multiPolyToRingsU(mp: MultiPolygon, mmPerU: number): OutlineRing[] {
+  return mp.map((polygon) => {
+    const outer = polygon[0];
+    const open = outer.slice(0, -1);
+    return open.map(([x, y]) => ({ x: x / mmPerU, y: y / mmPerU }));
+  });
+}
+
+/**
+ * The plate set against which key containment is checked. In reversible
+ * mode only left-of-axis plates are real; their mirror across the axis is
+ * a render-time ghost. To validate right-half keys we synthesize that
+ * mirror so the user's mental model (every visible key fits in some
+ * visible plate) is what we check.
+ */
+function plateSetForValidation(layout: Layout): PlateOutline[] {
+  if (!layout.reversible) return layout.plates;
+  const axisX = layout.mirrorAxisX;
+  const visible = layout.plates.filter((p) => {
+    if (p.vertices.length === 0) return false;
+    const cx = p.vertices.reduce((s, v) => s + v.x, 0) / p.vertices.length;
+    return cx < axisX;
+  });
+  const mirrored: PlateOutline[] = visible.map((p) => ({
+    vertices: p.vertices.map((v) => ({ x: axisX * 2 - v.x, y: v.y })).reverse(),
+  }));
+  return [...visible, ...mirrored];
+}
+
+/**
+ * For each key, report the parts of its cutout/padded footprint that fall
+ * outside every plate polygon. Keys with no issues are omitted.
+ */
+export function findPlateContainmentIssues(layout: Layout): PlateKeyIssue[] {
+  const plates = plateSetForValidation(layout);
+  if (plates.length === 0 || layout.keys.length === 0) return [];
+
+  const geometry = getSwitchGeometry(layout.switchType);
+  const mmPerU = geometry.mmPerU;
+  const cutoutHalf = geometry.cutoutSize / 2;
+  const paddingMM = layout.platePadding ?? 6;
+  const includeStabs = layout.stabilizers !== false;
+
+  const platePolys: Polygon[] = [];
+  for (const p of plates) {
+    if (p.vertices.length < 3) continue;
+    const ring: Pair[] = p.vertices.map((v) => [v.x * mmPerU, v.y * mmPerU]);
+    ring.push([ring[0][0], ring[0][1]]);
+    platePolys.push([ring as Ring]);
+  }
+  if (platePolys.length === 0) return [];
+
+  const plateGeom: MultiPolygon =
+    platePolys.length === 1
+      ? [platePolys[0]]
+      : polygonClipping.union(platePolys[0], ...platePolys.slice(1));
+
+  const issues: PlateKeyIssue[] = [];
+
+  for (const key of layout.keys) {
+    // Empty-label keys are placeholders that don't get a cutout, so there
+    // is nothing to validate against the plate outline.
+    if (key.label.trim().length === 0) continue;
+    const cx = (key.x + key.width / 2) * mmPerU;
+    const cy = (key.y + key.height / 2) * mmPerU;
+
+    const switchRing = closeRing(
+      rotatedRectCorners(cx, cy, cutoutHalf, cutoutHalf, key.rotation),
+    );
+    const cutoutPolys: Polygon[] = [[switchRing]];
+    if (includeStabs) {
+      for (const ring of stabilizerCutoutRings(key, geometry)) {
+        cutoutPolys.push([closeRing(ring)]);
+      }
+    }
+    const cutoutGeom: MultiPolygon =
+      cutoutPolys.length === 1
+        ? [cutoutPolys[0]]
+        : polygonClipping.union(cutoutPolys[0], ...cutoutPolys.slice(1));
+
+    const padHalfW = (key.width * mmPerU) / 2 + paddingMM;
+    const padHalfH = (key.height * mmPerU) / 2 + paddingMM;
+    const paddedGeom: Polygon = [
+      closeRing(rotatedRectCorners(cx, cy, padHalfW, padHalfH, key.rotation)),
+    ];
+
+    const cutoutDiff = polygonClipping.difference(cutoutGeom, plateGeom);
+    const paddedDiff = polygonClipping.difference(paddedGeom, plateGeom);
+
+    if (cutoutDiff.length === 0 && paddedDiff.length === 0) continue;
+
+    issues.push({
+      keyId: key.id,
+      cutoutOutside: multiPolyToRingsU(cutoutDiff, mmPerU),
+      paddingOutside: multiPolyToRingsU(paddedDiff, mmPerU),
+    });
+  }
+
+  return issues;
 }
 
 function pointInClosedRing(p: { x: number; y: number }, ring: Pair[]): boolean {

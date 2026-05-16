@@ -14,6 +14,7 @@
   import { getSwitchGeometry } from '../lib/switchGeometry';
   import { resolvePlateScrewsU, isValidPlateScrewU, keyRendersOnPlate } from '../lib/exportStl';
   import { stabilizerCutoutRings } from '../lib/stabilizers';
+  import { plateIssues } from '../stores/plateValidation';
 
   // MCU visualization constants (in canvas units = U). The MCU is rendered
   // rotated 90° vs. the physical board so its long axis lies horizontally
@@ -270,9 +271,19 @@
   }
 
   // --- Plate vertex state ---
-  let draggingVertex = $state<{ plateIdx: number; vertexIdx: number } | null>(null);
+  // `mirror` is true when the drag originated on the reversible-mode mirror
+  // copy of a plate. The selection set still keys on the source vertex
+  // index — the mirror handle is just an alternate way to grab the same
+  // underlying data, with cursor coordinates flipped across the axis.
+  let draggingVertex = $state<{ plateIdx: number; vertexIdx: number; mirror: boolean } | null>(null);
   /** Set of selected vertices, encoded as "plateIdx:vertexIdx" strings */
   let selectedVertices = $state<Set<string>>(new Set());
+
+  /** Flip a U-space point across the layout's mirror axis when `mirror` is true. */
+  function toSourceU(p: { x: number; y: number }, mirror: boolean): { x: number; y: number } {
+    if (!mirror) return p;
+    return { x: $layout.mirrorAxisX * 2 - p.x, y: p.y };
+  }
 
   function vertexKey(plateIdx: number, vertexIdx: number): string {
     return `${plateIdx}:${vertexIdx}`;
@@ -283,7 +294,7 @@
   }
 
   // --- Plate screw state ---
-  let draggingScrew = $state<{ plateIdx: number; screwIdx: number } | null>(null);
+  let draggingScrew = $state<{ plateIdx: number; screwIdx: number; mirror: boolean } | null>(null);
   let screwDidDrag = $state(false);
   let screwClickContext = $state<{ sk: string; shiftKey: boolean } | null>(null);
   /** Set of selected screws, encoded as "plateIdx:screwIdx" strings */
@@ -315,11 +326,33 @@
     return inside;
   }
 
-  function plateIndexAt(pos: { x: number; y: number }): number {
+  /**
+   * Find the plate (if any) under a cursor position. In reversible mode the
+   * right-side ghosts also count, with `mirror: true` indicating that the
+   * cursor position needs to be flipped across the axis before being
+   * applied to the stored source plate.
+   */
+  function plateAt(pos: { x: number; y: number }): { idx: number; mirror: boolean } | null {
     for (let pi = 0; pi < $layout.plates.length; pi++) {
-      if (pointInPolygon(pos.x, pos.y, $layout.plates[pi].vertices)) return pi;
+      if (pointInPolygon(pos.x, pos.y, $layout.plates[pi].vertices)) {
+        return { idx: pi, mirror: false };
+      }
     }
-    return -1;
+    if ($layout.reversible) {
+      const axisX = $layout.mirrorAxisX;
+      const flipped = { x: axisX * 2 - pos.x, y: pos.y };
+      for (let pi = 0; pi < $layout.plates.length; pi++) {
+        const plate = $layout.plates[pi];
+        if (plate.vertices.length === 0) continue;
+        // Only mirror left-of-axis plates (those are the ones the ghost shows).
+        const cx = plate.vertices.reduce((s, v) => s + v.x, 0) / plate.vertices.length;
+        if (cx >= axisX) continue;
+        if (pointInPolygon(flipped.x, flipped.y, plate.vertices)) {
+          return { idx: pi, mirror: true };
+        }
+      }
+    }
+    return null;
   }
 
   /** Materialize the plate's auto-placed screws into the manual array if it's
@@ -519,11 +552,11 @@
   /** Stored at pointerdown so pointerup can finalize a click vs. drag */
   let vertexClickContext = $state<{ vk: string; shiftKey: boolean } | null>(null);
 
-  function onVertexDragStart(plateIdx: number, vertexIdx: number, e: PointerEvent) {
+  function onVertexDragStart(plateIdx: number, vertexIdx: number, e: PointerEvent, mirror = false) {
     if (e.button !== 0) return;
     e.stopPropagation();
     vertexDidDrag = false;
-    draggingVertex = { plateIdx, vertexIdx };
+    draggingVertex = { plateIdx, vertexIdx, mirror };
 
     const vk = vertexKey(plateIdx, vertexIdx);
     vertexClickContext = { vk, shiftKey: e.shiftKey };
@@ -545,22 +578,23 @@
   }
 
   // --- Plate edge click: add a vertex ---
-  function onEdgeClick(plateIdx: number, edgeIdx: number, e: PointerEvent) {
+  function onEdgeClick(plateIdx: number, edgeIdx: number, e: PointerEvent, mirror = false) {
     if (e.button !== 0) return;
     e.stopPropagation();
     const screenPt = eventToSvgScreen(e);
     const canvasPt = screenToCanvas(screenPt, $pan, $zoom);
     const posU = canvasPxToU(canvasPt);
-    addPlateVertex(plateIdx, edgeIdx, roundPos(posU.x), roundPos(posU.y));
+    const src = toSourceU(posU, mirror);
+    addPlateVertex(plateIdx, edgeIdx, roundPos(src.x), roundPos(src.y));
   }
 
   // --- Plate screw drag start ---
-  function onScrewDragStart(plateIdx: number, screwIdx: number, e: PointerEvent) {
+  function onScrewDragStart(plateIdx: number, screwIdx: number, e: PointerEvent, mirror = false) {
     if (e.button !== 0) return;
     e.stopPropagation();
     ensureManualScrews(plateIdx);
     screwDidDrag = false;
-    draggingScrew = { plateIdx, screwIdx };
+    draggingScrew = { plateIdx, screwIdx, mirror };
 
     const sk = screwKey(plateIdx, screwIdx);
     screwClickContext = { sk, shiftKey: e.shiftKey };
@@ -622,13 +656,14 @@
 
       // Cmd/Ctrl-click inside a plate (plate mode) → add a screw
       if ($editorMode === 'plate' && (e.metaKey || e.ctrlKey)) {
-        const pi = plateIndexAt(posU);
-        if (pi >= 0) {
-          const x = roundPos(posU.x);
-          const y = roundPos(posU.y);
-          if (isValidPlateScrewU($layout, pi, { x, y })) {
-            ensureManualScrews(pi);
-            addScrew(pi, x, y);
+        const hit = plateAt(posU);
+        if (hit) {
+          const src = toSourceU(posU, hit.mirror);
+          const x = roundPos(src.x);
+          const y = roundPos(src.y);
+          if (isValidPlateScrewU($layout, hit.idx, { x, y })) {
+            ensureManualScrews(hit.idx);
+            addScrew(hit.idx, x, y);
           }
           return;
         }
@@ -654,9 +689,10 @@
       const screenPt = eventToSvgScreen(e);
       const canvasPt = screenToCanvas(screenPt, $pan, $zoom);
       const posU = canvasPxToU(canvasPt);
+      const src = toSourceU(posU, draggingVertex.mirror);
       const snap = $gridSnap;
-      const x = snap > 0 && e.shiftKey ? snapToGrid(posU.x, snap) : roundPos(posU.x);
-      const y = snap > 0 && e.shiftKey ? snapToGrid(posU.y, snap) : roundPos(posU.y);
+      const x = snap > 0 && e.shiftKey ? snapToGrid(src.x, snap) : roundPos(src.x);
+      const y = snap > 0 && e.shiftKey ? snapToGrid(src.y, snap) : roundPos(src.y);
 
       // Get current position of the anchor vertex to compute delta
       const anchor = $layout.plates[draggingVertex.plateIdx]?.vertices[draggingVertex.vertexIdx];
@@ -679,9 +715,10 @@
       const screenPt = eventToSvgScreen(e);
       const canvasPt = screenToCanvas(screenPt, $pan, $zoom);
       const posU = canvasPxToU(canvasPt);
+      const src = toSourceU(posU, draggingScrew.mirror);
       const snap = $gridSnap;
-      const x = snap > 0 && e.shiftKey ? snapToGrid(posU.x, snap) : roundPos(posU.x);
-      const y = snap > 0 && e.shiftKey ? snapToGrid(posU.y, snap) : roundPos(posU.y);
+      const x = snap > 0 && e.shiftKey ? snapToGrid(src.x, snap) : roundPos(src.x);
+      const y = snap > 0 && e.shiftKey ? snapToGrid(src.y, snap) : roundPos(src.y);
 
       const anchor = $layout.plates[draggingScrew.plateIdx]?.screws?.[draggingScrew.screwIdx];
       if (!anchor) return;
@@ -1451,40 +1488,79 @@
 
     <!-- Plate outlines (plate mode) -->
     {#if $editorMode === 'plate'}
-      <!-- Mirror ghosts: in reversible mode each visible plate is rendered
-           again on the opposite side of the axis, no handles, dashed, so the
-           user sees the right half but only edits the left. -->
+      <!-- Reversible mirror: render the right-side copy with full handles.
+           Edits to the mirror flip their cursor coords across the axis and
+           apply to the same source plate, so the two halves stay in sync. -->
       {#if $layout.reversible}
         {#each visiblePlates as { plate, idx: pi }}
-          {@const ghostVerts = mirrorPolygon(plate.vertices)}
+          {@const sourceVerts = plate.vertices}
+          {@const mirroredVerts = mirrorPolygon(sourceVerts)}
+          {@const nVerts = sourceVerts.length}
           {@const radius = $layout.plateCornerRadius}
-          {@const ghostFilleted = radius > 0 ? filletPolygon(ghostVerts, radius, undefined, MM_PER_U) : null}
-          <polygon
-            points={(ghostFilleted ?? ghostVerts).map(v => `${v.x * SCALE},${v.y * SCALE}`).join(' ')}
-            fill="rgba(74, 158, 255, 0.04)"
-            stroke="#4a9eff"
-            stroke-width={1 / $zoom}
-            stroke-dasharray={`${4 / $zoom} ${3 / $zoom}`}
-            opacity="0.55"
-            pointer-events="none"
-          />
-          {#each (resolvedScrews[pi] ?? []) as s}
-            <circle
-              cx={($layout.mirrorAxisX * 2 - s.x) * SCALE}
-              cy={s.y * SCALE}
-              r={6 / $zoom}
-              fill="none"
+          {@const ghostFilleted = radius > 0 ? filletPolygon(mirroredVerts, radius, undefined, MM_PER_U) : null}
+          {#if ghostFilleted}
+            <polygon
+              points={ghostFilleted.map(v => `${v.x * SCALE},${v.y * SCALE}`).join(' ')}
+              fill="rgba(74, 158, 255, 0.08)"
               stroke="#4a9eff"
-              stroke-width={1 / $zoom}
-              opacity="0.4"
+              stroke-width={1.5 / $zoom}
               pointer-events="none"
             />
+          {/if}
+          <polygon
+            points={mirroredVerts.map(v => `${v.x * SCALE},${v.y * SCALE}`).join(' ')}
+            fill={ghostFilleted ? 'none' : 'rgba(74, 158, 255, 0.08)'}
+            stroke="#4a9eff"
+            stroke-width={1 / $zoom}
+            stroke-dasharray={ghostFilleted ? `${4 / $zoom} ${3 / $zoom}` : 'none'}
+            opacity={ghostFilleted ? 0.3 : 1}
+            pointer-events="none"
+          />
+          <!-- Edge hit targets on the mirror; clicks insert a vertex into
+               the source at the corresponding (reverse-order) edge. -->
+          {#each mirroredVerts as v, mvi}
+            {@const next = mirroredVerts[(mvi + 1) % nVerts]}
+            {@const srcAfterIdx = (nVerts - 2 - mvi + nVerts) % nVerts}
+            <!-- svelte-ignore a11y_no_static_element_interactions -->
+            <line
+              x1={v.x * SCALE} y1={v.y * SCALE}
+              x2={next.x * SCALE} y2={next.y * SCALE}
+              stroke="transparent"
+              stroke-width={8 / $zoom}
+              class="plate-edge"
+              onpointerdown={(e) => onEdgeClick(pi, srcAfterIdx, e, true)}
+            />
+          {/each}
+          <!-- Vertex handles on the mirror; the same source vertex shows
+               as selected on both sides via the shared selection set. -->
+          {#each mirroredVerts as v, mvi}
+            {@const srcVi = nVerts - 1 - mvi}
+            <!-- svelte-ignore a11y_no_static_element_interactions -->
             <circle
-              cx={($layout.mirrorAxisX * 2 - s.x) * SCALE}
-              cy={s.y * SCALE}
+              cx={v.x * SCALE} cy={v.y * SCALE}
+              r={5 / $zoom}
+              class="plate-vertex"
+              class:plate-vertex-selected={isVertexSelected(pi, srcVi)}
+              onpointerdown={(e) => onVertexDragStart(pi, srcVi, e, true)}
+            />
+          {/each}
+          <!-- Screw handles on the mirror; selection mirrors the source. -->
+          {#each (resolvedScrews[pi] ?? []) as s, si}
+            {@const mx = $layout.mirrorAxisX * 2 - s.x}
+            {@const valid = isValidPlateScrewU($layout, pi, s)}
+            <!-- svelte-ignore a11y_no_static_element_interactions -->
+            <circle
+              cx={mx * SCALE} cy={s.y * SCALE}
+              r={6 / $zoom}
+              class="plate-screw"
+              class:plate-screw-selected={isScrewSelected(pi, si)}
+              class:plate-screw-invalid={!valid}
+              onpointerdown={(e) => onScrewDragStart(pi, si, e, true)}
+            />
+            <circle
+              cx={mx * SCALE} cy={s.y * SCALE}
               r={1.5 / $zoom}
               fill="white"
-              opacity="0.5"
               pointer-events="none"
             />
           {/each}
@@ -1580,7 +1656,7 @@
             matrixCell={cell}
             focusCols={$schematicFocus === 'cols'}
             groupColor={focusIdx !== undefined ? primaryColor(focusIdx) : undefined}
-            hasError={errorKeyIds.has(key.id)}
+            hasError={$editorMode === 'schematic' && errorKeyIds.has(key.id)}
             faded={$editorMode === 'layout'}
             onDragStart={onKeyDragStart}
           />
@@ -1598,7 +1674,7 @@
             matrixCell={cell}
             focusCols={$schematicFocus === 'cols'}
             groupColor={focusIdx !== undefined ? primaryColor(focusIdx) : undefined}
-            hasError={errorKeyIds.has(key.id)}
+            hasError={$editorMode === 'schematic' && errorKeyIds.has(key.id)}
             highlighted={highlightedKeyIds.has(key.id)}
             onDragStart={onKeyDragStart}
           />
@@ -1636,6 +1712,37 @@
         {/if}
       {/each}
     {/if}
+
+    <!-- Plate-mode containment warnings: shade the regions where the
+         padded footprint (orange) and switch cutout (red) extend outside
+         the plate, so the user can see exactly where to widen the outline.
+         Skip the padding overlay when padding=0 (the user opted out). -->
+    {#if $editorMode === 'plate'}
+      {@const showPaddingWarn = ($layout.platePadding ?? 6) > 0}
+      {#each $plateIssues as issue (issue.keyId)}
+        {#if showPaddingWarn}
+          {#each issue.paddingOutside as ring}
+            <polygon
+              points={ring.map((v) => `${v.x * SCALE},${v.y * SCALE}`).join(' ')}
+              fill="rgba(255, 159, 74, 0.35)"
+              stroke="#ff9f4a"
+              stroke-width={1.5 / $zoom}
+              pointer-events="none"
+            />
+          {/each}
+        {/if}
+        {#each issue.cutoutOutside as ring}
+          <polygon
+            points={ring.map((v) => `${v.x * SCALE},${v.y * SCALE}`).join(' ')}
+            fill="rgba(255, 68, 68, 0.4)"
+            stroke="#ff4444"
+            stroke-width={2 / $zoom}
+            pointer-events="none"
+          />
+        {/each}
+      {/each}
+    {/if}
+
     <!-- Rotation handle for selected keys (layout mode only) -->
     {#if $editorMode === 'layout'}
       {#each $layout.keys.filter((k) => $selection.has(k.id)) as key (key.id)}

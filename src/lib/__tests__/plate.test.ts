@@ -1,6 +1,12 @@
 import { describe, it, expect } from 'vitest';
-import { generatePlateOutlines, filletPolygon, simplifyRing, type OutlineRing } from '../plate';
-import type { Key } from '../../types';
+import {
+  generatePlateOutlines,
+  filletPolygon,
+  simplifyRing,
+  findPlateContainmentIssues,
+  type OutlineRing,
+} from '../plate';
+import type { Key, Layout } from '../../types';
 
 function makeKey(overrides: Partial<Key> & { x: number; y: number }): Key {
   return {
@@ -8,7 +14,22 @@ function makeKey(overrides: Partial<Key> & { x: number; y: number }): Key {
     width: 1,
     height: 1,
     rotation: 0,
-    label: '',
+    label: 'X',
+    ...overrides,
+  };
+}
+
+function makeLayout(overrides: Partial<Layout> & { keys: Key[]; plates: Layout['plates'] }): Layout {
+  return {
+    name: 'test',
+    mirrorPairs: {},
+    mirrorAxisX: 0,
+    minGap: 0,
+    matrixOverrides: {},
+    alignmentGroups: [],
+    plateCornerRadius: 0,
+    platePadding: 6,
+    stabilizers: false,
     ...overrides,
   };
 }
@@ -218,5 +239,77 @@ describe('simplifyRing', () => {
     ];
     const simplified = simplifyRing(ring, 5, 0.05);
     expect(simplified).toHaveLength(4);
+  });
+});
+
+describe('findPlateContainmentIssues', () => {
+  it('returns nothing when there are no plates', () => {
+    const layout = makeLayout({
+      keys: [makeKey({ x: 0, y: 0 })],
+      plates: [],
+    });
+    expect(findPlateContainmentIssues(layout)).toEqual([]);
+  });
+
+  it('reports no issues when the auto-generated plate fully contains each key', () => {
+    const keys = [makeKey({ x: 0, y: 0 }), makeKey({ x: 1, y: 0 })];
+    const { plates } = generatePlateOutlines(keys, 6);
+    const layout = makeLayout({
+      keys,
+      plates: plates.map((vertices) => ({ vertices })),
+    });
+    expect(findPlateContainmentIssues(layout)).toEqual([]);
+  });
+
+  it('flags a cutout-outside issue when the plate is too small for the switch hole', () => {
+    // Tiny plate that barely covers one key's center, much smaller than a
+    // 14mm switch cutout (~0.735U at MX pitch).
+    const keys = [makeKey({ x: 0, y: 0, id: 'tiny' })];
+    const tinyPlate = [
+      { x: 0.4, y: 0.4 },
+      { x: 0.6, y: 0.4 },
+      { x: 0.6, y: 0.6 },
+      { x: 0.4, y: 0.6 },
+    ];
+    const layout = makeLayout({ keys, plates: [{ vertices: tinyPlate }] });
+    const issues = findPlateContainmentIssues(layout);
+    expect(issues).toHaveLength(1);
+    expect(issues[0].keyId).toBe('tiny');
+    expect(issues[0].cutoutOutside.length).toBeGreaterThan(0);
+  });
+
+  it('flags a padding-only issue when the cutout fits but the padding margin does not', () => {
+    // Plate exactly equal to the 1u key bounds (no padding around it).
+    // The 14mm cutout fits comfortably inside 19.05mm, but a 6mm padding
+    // margin can't be respected.
+    const keys = [makeKey({ x: 0, y: 0, id: 'snug' })];
+    const snugPlate = [
+      { x: 0, y: 0 },
+      { x: 1, y: 0 },
+      { x: 1, y: 1 },
+      { x: 0, y: 1 },
+    ];
+    const layout = makeLayout({
+      keys,
+      plates: [{ vertices: snugPlate }],
+      platePadding: 6,
+    });
+    const issues = findPlateContainmentIssues(layout);
+    expect(issues).toHaveLength(1);
+    expect(issues[0].keyId).toBe('snug');
+    expect(issues[0].cutoutOutside).toEqual([]);
+    expect(issues[0].paddingOutside.length).toBeGreaterThan(0);
+  });
+
+  it('skips empty-label keys (they have no cutout)', () => {
+    const keys = [makeKey({ x: 0, y: 0, label: '' })];
+    const tinyPlate = [
+      { x: 0.4, y: 0.4 },
+      { x: 0.6, y: 0.4 },
+      { x: 0.6, y: 0.6 },
+      { x: 0.4, y: 0.6 },
+    ];
+    const layout = makeLayout({ keys, plates: [{ vertices: tinyPlate }] });
+    expect(findPlateContainmentIssues(layout)).toEqual([]);
   });
 });
