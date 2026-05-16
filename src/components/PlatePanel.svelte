@@ -2,6 +2,7 @@
   import { layout, setPlates, pushUndoExported, updateLayoutField, resetScrewsToAuto } from '../stores/layout';
   import { plateKeyDisplay, type PlateKeyDisplay } from '../stores/editor';
   import { generatePlateOutlines, simplifyRing, reversibleSourceKeys } from '../lib/plate';
+  import { plateIssues } from '../stores/plateValidation';
 
   let cornerRadius = $derived($layout.plateCornerRadius);
   let padding = $derived($layout.platePadding ?? 6);
@@ -84,6 +85,15 @@
 
   let plateCount = $derived($layout.plates.length);
   let vertexCount = $derived($layout.plates.reduce((sum, p) => sum + p.vertices.length, 0));
+
+  let cutoutOutsideCount = $derived($plateIssues.filter((i) => i.cutoutOutside.length > 0).length);
+  // When the user sets padding to 0 they've opted out of the margin
+  // requirement, so the "padding violated" warning is meaningless.
+  let paddingOnlyCount = $derived(
+    padding > 0
+      ? $plateIssues.filter((i) => i.cutoutOutside.length === 0 && i.paddingOutside.length > 0).length
+      : 0,
+  );
 </script>
 
 <aside class="panel">
@@ -92,6 +102,18 @@
   <div class="stats">
     {plateCount} plate{plateCount !== 1 ? 's' : ''}, {vertexCount} vertices
   </div>
+
+  {#if cutoutOutsideCount > 0}
+    <div class="error-banner">
+      {cutoutOutsideCount} key{cutoutOutsideCount > 1 ? 's have' : ' has'} a switch or stabilizer cutout outside the plate outline. The switch will not fit; widen the plate or move the key.
+    </div>
+  {/if}
+
+  {#if paddingOnlyCount > 0}
+    <div class="warning-banner">
+      {paddingOnlyCount} key{paddingOnlyCount > 1 ? 's have' : ' has'} less than {padding}&nbsp;mm of plate material around them. The cutout fits, but the padding margin is not respected.
+    </div>
+  {/if}
 
   <div class="field">
     <label for="plate-padding">Key Padding (mm)</label>
@@ -183,6 +205,27 @@
     font-size: 12px;
     color: #888;
     margin-bottom: 12px;
+  }
+
+  .error-banner,
+  .warning-banner {
+    border-radius: 4px;
+    padding: 6px 8px;
+    font-size: 11px;
+    margin-bottom: 8px;
+    line-height: 1.4;
+  }
+
+  .error-banner {
+    background: rgba(255, 68, 68, 0.15);
+    border: 1px solid rgba(255, 68, 68, 0.4);
+    color: #ff6666;
+  }
+
+  .warning-banner {
+    background: rgba(255, 159, 74, 0.15);
+    border: 1px solid rgba(255, 159, 74, 0.4);
+    color: #ffb070;
   }
 
   .field {
