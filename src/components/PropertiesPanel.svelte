@@ -1,6 +1,7 @@
 <script lang="ts">
-  import { layout, updateKeysWithUndo, linkMirrorPair, unlinkMirrorPair, enforceMinGap, createAlignmentGroup, removeAlignmentGroup, removeKeysFromAlignment, setMirroredMode, setMirrorSizeSync } from '../stores/layout';
+  import { layout, updateKeysWithUndo, linkMirrorPair, unlinkMirrorPair, enforceMinGap, createAlignmentGroup, removeAlignmentGroup, removeKeysFromAlignment, setMirroredMode, setMirrorSizeSync, setSplitMode } from '../stores/layout';
   import { selection, minGap } from '../stores/editor';
+  import { splitCrossingKeyIds } from '../stores/splitValidation';
   import type { Key } from '../types';
 
   // Derive the selected keys from current layout + selection
@@ -38,6 +39,8 @@
   let sharedSides = $derived(sharedValue(keySidesMode));
   let reversible = $derived($layout.reversible === true);
   let mirrored = $derived($layout.mirrored === true);
+  let split = $derived($layout.split === true);
+  let crossingCount = $derived($splitCrossingKeyIds.length);
 
   function setSidesMode(mode: 'both' | 'L' | 'R') {
     const ids = $selection;
@@ -292,6 +295,19 @@
       />
       <span>Mirrored mode</span>
     </label>
+    <label class="mirror-sync-row">
+      <input
+        type="checkbox"
+        checked={split}
+        onchange={(e) => setSplitMode(e.currentTarget.checked)}
+      />
+      <span>Split mode</span>
+    </label>
+    {#if split && crossingCount > 0}
+      <div class="error-banner">
+        {crossingCount} key{crossingCount > 1 ? 's' : ''} cross{crossingCount > 1 ? '' : 'es'} the split axis. Move or resize {crossingCount > 1 ? 'them' : 'it'} so no key straddles the line.
+      </div>
+    {/if}
     <div class="field">
       <label for="setting-min-gap">Min Gap (mm)</label>
       <input
@@ -557,5 +573,16 @@
     margin-top: auto;
     padding-top: 12px;
     border-top: 1px solid #333;
+  }
+
+  .error-banner {
+    background: rgba(255, 68, 68, 0.15);
+    border: 1px solid rgba(255, 68, 68, 0.4);
+    border-radius: 4px;
+    padding: 6px 8px;
+    font-size: 11px;
+    color: #ff6666;
+    margin: 4px 0 8px;
+    line-height: 1.4;
   }
 </style>

@@ -322,19 +322,35 @@ function r(n: number): number {
  * the physical key positions, SOD-123 diode footprints on the back layer,
  * and a Pro Micro microcontroller footprint. Generates net assignments
  * for the row/column matrix and a board outline on Edge.Cuts.
+ *
+ * When `options.side` is provided (split mode), only that half's keys are
+ * emitted and the right-half pin overrides apply when `side === 'right'`.
  */
-export function exportKicadPcb(layout: Layout, matrixMap: MatrixMap): string {
+export function exportKicadPcb(
+  layout: Layout,
+  matrixMap: MatrixMap,
+  options: { side?: 'left' | 'right' } = {},
+): string {
   _uid = 0;
   const geometry = getSwitchGeometry(layout.switchType);
   const U_MM = geometry.mmPerU;
   const reversible = layout.reversible === true;
+  const side = options.side;
 
   // Reversible mode: emit only the left half (keys whose center sits to the
   // left of the mirror axis). The user fabs two boards from the single
   // design; flipping the second gives them the right half.
-  const exportedKeys = reversible
-    ? layout.keys.filter((k) => k.x + k.width / 2 < layout.mirrorAxisX)
-    : layout.keys;
+  // Split mode: emit only the keys on the requested side.
+  let exportedKeys: typeof layout.keys;
+  if (side) {
+    exportedKeys = side === 'left'
+      ? layout.keys.filter((k) => k.x + k.width / 2 < layout.mirrorAxisX)
+      : layout.keys.filter((k) => k.x + k.width / 2 >= layout.mirrorAxisX);
+  } else if (reversible) {
+    exportedKeys = layout.keys.filter((k) => k.x + k.width / 2 < layout.mirrorAxisX);
+  } else {
+    exportedKeys = layout.keys;
+  }
 
   // Determine matrix dimensions
   const rowSet = new Set<number>();
@@ -394,7 +410,8 @@ export function exportKicadPcb(layout: Layout, matrixMap: MatrixMap): string {
   }
 
   // Pro Micro pin-to-net mapping
-  const pinAssignment = applyPinOverrides(assignPinsToMatrix(rows, cols), layout.pinOverrides);
+  const overrides = side === 'right' ? layout.pinOverridesRight : layout.pinOverrides;
+  const pinAssignment = applyPinOverrides(assignPinsToMatrix(rows, cols), overrides);
   const pinNets: Record<number, NetInfo> = {};
   for (const [pinStr, netName] of Object.entries(pinAssignment)) {
     const pin = Number(pinStr);
@@ -554,13 +571,15 @@ export function exportKicadPcb(layout: Layout, matrixMap: MatrixMap): string {
   // screws. Otherwise, fall back to a convex hull of keys + Pro Micro.
   // Reversible mode emits a single board (the left half), so plates whose
   // centroid sits to the right of the mirror axis are dropped — the
-  // physical right half is the same fab flipped.
+  // physical right half is the same fab flipped. Split mode does the same
+  // per half: the requested side keeps only the plates whose centroid sits
+  // on that side of the axis.
   const allPlates = layout.plates ?? [];
-  const plates = reversible
+  const plates = (reversible || side)
     ? allPlates.filter((p) => {
         if (p.vertices.length === 0) return false;
         const cx = p.vertices.reduce((s, v) => s + v.x, 0) / p.vertices.length;
-        return cx < layout.mirrorAxisX;
+        return side === 'right' ? cx >= layout.mirrorAxisX : cx < layout.mirrorAxisX;
       })
     : allPlates;
   const outlineLines: string[] = [];

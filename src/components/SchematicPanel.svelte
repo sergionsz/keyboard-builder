@@ -1,7 +1,8 @@
 <script lang="ts">
   import { layout, pushUndoExported, updateLayoutField } from '../stores/layout';
   import { selection } from '../stores/editor';
-  import { matrix, matrixErrors, resetMatrix, setKeyMatrix, primaryColor, secondaryColor, schematicFocus, pinAssignments, pinErrors, setPinNet, resetPins, schematicVisibleKeys, type SchematicFocus } from '../stores/schematic';
+  import { matrix, matrixErrors, resetMatrix, setKeyMatrix, primaryColor, secondaryColor, schematicFocus, pinAssignments, pinErrors, setPinNet, resetPins, schematicVisibleKeys, splitSide, type SchematicFocus, type SplitSide } from '../stores/schematic';
+  import { splitCrossingKeyIds } from '../stores/splitValidation';
   import { matrixDimensions, findUnpairedKeys } from '../lib/matrix';
   import { PRO_MICRO_PINS } from '../lib/serialize/proMicro';
   import { SWITCH_TYPE_LABELS, type SwitchType } from '../lib/switchGeometry';
@@ -10,6 +11,13 @@
   let currentSwitchType = $derived($layout.switchType ?? 'mx');
   let hotswap = $derived($layout.hotswap === true);
   let reversible = $derived($layout.reversible === true);
+  let mirrored = $derived($layout.mirrored === true);
+  let split = $derived($layout.split === true);
+  let crossingCount = $derived($splitCrossingKeyIds.length);
+
+  function setSide(s: SplitSide) {
+    splitSide.set(s);
+  }
 
   function onSwitchTypeChange(e: Event) {
     const val = (e.currentTarget as HTMLSelectElement).value as SwitchType;
@@ -45,7 +53,7 @@
 
   let errorCount = $derived($matrixErrors.size);
 
-  let visibleKeys = $derived(schematicVisibleKeys($layout));
+  let visibleKeys = $derived(schematicVisibleKeys($layout, $splitSide));
 
   // Build a row -> keys map
   let rowMap = $derived.by(() => {
@@ -119,9 +127,12 @@
     setPinNet(pin, value);
   }
 
-  let hasOverrides = $derived(
-    Object.keys($layout.pinOverrides ?? {}).length > 0
-  );
+  let hasOverrides = $derived.by(() => {
+    const map = split && $splitSide === 'right'
+      ? $layout.pinOverridesRight
+      : $layout.pinOverrides;
+    return Object.keys(map ?? {}).length > 0;
+  });
 
   // Set of pin numbers that have duplicate net assignments
   let dupePinSet = $derived.by(() => {
@@ -157,20 +168,45 @@
     <span>Hot-swap sockets</span>
   </label>
 
-  <label class="checkbox-field" for="reversible-toggle">
+  <label class="checkbox-field" class:checkbox-field-disabled={!mirrored || split} for="reversible-toggle">
     <input
       id="reversible-toggle"
       type="checkbox"
       checked={reversible}
+      disabled={!mirrored || split}
       onchange={onReversibleChange}
     />
     <span>Reversible PCB (single design, fab two)</span>
   </label>
 
-  {#if reversible && unpairedKeyIds.length > 0}
+  {#if split}
+    <p class="hint hint-inline">Split mode fabs a distinct PCB per half, so Reversible PCB (single shared design) is disabled.</p>
+  {:else if !mirrored}
+    <p class="hint hint-inline">Enable Mirrored mode in the Layout panel to use Reversible PCB.</p>
+  {:else if reversible && unpairedKeyIds.length > 0}
     <div class="error-banner">
       {unpairedKeyIds.length} key{unpairedKeyIds.length > 1 ? 's' : ''} not in a mirror pair. Reversible mode requires every key to be paired (press M on a pair in Layout mode).
     </div>
+  {/if}
+
+  {#if split}
+    <div class="focus-toggle split-toggle">
+      <button
+        class="focus-btn"
+        class:focus-active={$splitSide === 'left'}
+        onclick={() => setSide('left')}
+      >Left</button>
+      <button
+        class="focus-btn"
+        class:focus-active={$splitSide === 'right'}
+        onclick={() => setSide('right')}
+      >Right</button>
+    </div>
+    {#if crossingCount > 0}
+      <div class="error-banner">
+        {crossingCount} key{crossingCount > 1 ? 's' : ''} cross the split axis. Resolve in Layout mode before wiring the PCB.
+      </div>
+    {/if}
   {/if}
 
   <h2>Matrix Assignment</h2>
@@ -493,6 +529,33 @@
     width: auto;
     margin: 0;
     cursor: pointer;
+  }
+
+  .checkbox-field-disabled {
+    color: #666;
+    cursor: not-allowed;
+  }
+
+  .checkbox-field-disabled input {
+    cursor: not-allowed;
+  }
+
+  .hint-inline {
+    margin: -4px 0 12px;
+    text-align: left;
+    font-size: 11px;
+    color: #888;
+  }
+
+  .split-toggle {
+    margin: 4px 0 10px;
+    width: 100%;
+  }
+
+  .split-toggle .focus-btn {
+    flex: 1;
+    padding: 8px 12px;
+    font-size: 13px;
   }
 
   .matrix-table-section {

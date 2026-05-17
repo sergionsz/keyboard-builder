@@ -74,7 +74,7 @@ function createSampleLayout(): Layout {
       { id: uuid(), x: 0,    y: 4, rotation: 0, width: 1.25, height: 1, label: 'Ctrl' },
       { id: uuid(), x: 1.25, y: 4, rotation: 0, width: 1.25, height: 1, label: 'Win' },
       { id: uuid(), x: 2.5,  y: 4, rotation: 0, width: 1.25, height: 1, label: 'Alt' },
-      { id: uuid(), x: 3.75, y: 4, rotation: 0, width: 6.25, height: 1, label: '' },
+      { id: uuid(), x: 3.75, y: 4, rotation: 0, width: 6.25, height: 1, label: '{space}' },
       { id: uuid(), x: 10,   y: 4, rotation: 0, width: 1.25, height: 1, label: 'Alt' },
       { id: uuid(), x: 11.25, y: 4, rotation: 0, width: 1.25, height: 1, label: 'Win' },
       { id: uuid(), x: 12.5,  y: 4, rotation: 0, width: 1.25, height: 1, label: 'Menu' },
@@ -1001,7 +1001,7 @@ export function setMirroredMode(enabled: boolean) {
   pushUndo();
   layout.update((l) => {
     if (!enabled) {
-      return { ...l, mirrored: false };
+      return { ...l, mirrored: false, reversible: false };
     }
     // Compute axis from existing keys' bbox center if no pairs already
     // define one. If pairs exist, keep the established axis.
@@ -1026,6 +1026,36 @@ export function setMirroredMode(enabled: boolean) {
       keys,
       alignmentGroups: pruneAlignmentGroups(l.alignmentGroups, removedIds),
     };
+  });
+}
+
+/**
+ * Toggle Split mode. Enabling places the split axis at the existing
+ * mirror axis when mirror pairs exist; otherwise it falls back to the
+ * bounding-box center X of the current keys. Keys that straddle the axis
+ * are not moved or removed — they are flagged as warnings in the UI so
+ * the user can resolve them deliberately.
+ */
+export function setSplitMode(enabled: boolean) {
+  const current = get(layout);
+  if ((current.split ?? false) === enabled) return;
+  pushUndo();
+  layout.update((l) => {
+    if (!enabled) {
+      return { ...l, split: false };
+    }
+    let axisX = l.mirrorAxisX;
+    const hasExistingPairs = Object.keys(l.mirrorPairs).length > 0;
+    if (!hasExistingPairs && l.keys.length > 0) {
+      let minX = Infinity, maxX = -Infinity;
+      for (const k of l.keys) {
+        const cx = k.x + k.width / 2;
+        if (cx < minX) minX = cx;
+        if (cx > maxX) maxX = cx;
+      }
+      axisX = (minX + maxX) / 2;
+    }
+    return { ...l, split: true, mirrorAxisX: axisX, reversible: false };
   });
 }
 

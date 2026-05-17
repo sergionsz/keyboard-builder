@@ -71,6 +71,18 @@ export function findUnpairedKeys(
   return keys.filter((k) => !mirrorPairs[k.id]).map((k) => k.id);
 }
 
+/**
+ * IDs of keys whose horizontal extent straddles the split axis. A small
+ * epsilon lets keys whose edge sits exactly on the axis count as belonging
+ * to one side instead of being flagged as crossing.
+ */
+export function findKeysCrossingAxis(keys: Key[], axisX: number): string[] {
+  const EPS = 1e-6;
+  return keys
+    .filter((k) => k.x + EPS < axisX && k.x + k.width - EPS > axisX)
+    .map((k) => k.id);
+}
+
 /** Find keys that share the same (row, col) position */
 export function findDuplicates(matrix: MatrixMap): Map<string, string[]> {
   // Group key IDs by "row,col" string
