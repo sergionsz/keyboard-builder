@@ -84,9 +84,20 @@ function fromBase64url(s: string): Uint8Array {
   return out;
 }
 
-// ── Serialize (v9 binary) ───────────────────────────────────────────
+// ── Serialize (v10 binary) ──────────────────────────────────────────
 //
-// v9 extends v8 with:
+// v10 extends v9 with three trailing sections so all Layout settings now
+// round-trip through the URL:
+//   - 1 byte: split (0 = off, 1 = on).
+//   - Pin overrides for the LEFT / single MCU:
+//       1 byte count P, then per entry:
+//         1 byte pin number
+//         1 byte net-name length L, then L bytes UTF-8 net name
+//   - Pin overrides for the RIGHT half (split mode), same shape.
+// The URL prefix moves from '9' (v9) to 'A' (v10); older prefixes still
+// deserialize unchanged so existing links keep working.
+//
+// (v9 changes vs v8 retained for context:)
 //   - Per-key flag bit 3 ("has sides"): when set, a single trailing byte
 //     follows the rest of the flag-conditional fields. 0 = both, 1 = L
 //     only, 2 = R only. Absent flag = both (default).
@@ -97,7 +108,23 @@ function fromBase64url(s: string): Uint8Array {
 //     through mirrorPairs).
 //   - 2 bytes: platePadding × 100 (uint16), where 65535 means "unset" and
 //     falls back to the 6mm default at runtime.
-// Reading v1-v8 defaults all v9 fields to off / absent.
+
+function pinOverrideEntries(map: Record<number, string> | undefined): [number, string][] {
+  if (!map) return [];
+  const out: [number, string][] = [];
+  for (const [k, v] of Object.entries(map)) {
+    const pin = Number(k);
+    if (!Number.isFinite(pin) || pin < 0 || pin > 255) continue;
+    out.push([pin, v ?? '']);
+  }
+  return out;
+}
+
+function pinOverrideBytes(entries: [number, string][]): number {
+  let n = 1; // count byte
+  for (const [, net] of entries) n += 1 + 1 + TEXT.encode(net).length;
+  return n;
+}
 
 export function serializeLayout(layout: Layout): string {
   const idToIndex = new Map<string, number>();
@@ -136,14 +163,17 @@ export function serializeLayout(layout: Layout): string {
     (sum, p) => sum + 1 + (p.screws ? 2 + p.screws.length * 4 : 0),
     0,
   );
+  const leftPinEntries = pinOverrideEntries(layout.pinOverrides);
+  const rightPinEntries = pinOverrideEntries(layout.pinOverridesRight);
+  const pinOverrideTotalBytes = pinOverrideBytes(leftPinEntries) + pinOverrideBytes(rightPinEntries);
   const buf = new ArrayBuffer(
-    4 + 256 + layout.keys.length * 32 + mirrorPairs.length * 4 + 10 + alignGroupBytes + matrixEntries.length * 4 + plateBytes + 4 + 1 + screwBytes + 6 + mirrorPairs.length * 2,
+    4 + 256 + layout.keys.length * 32 + mirrorPairs.length * 4 + 10 + alignGroupBytes + matrixEntries.length * 4 + plateBytes + 4 + 1 + screwBytes + 6 + mirrorPairs.length * 2 + 1 + pinOverrideTotalBytes,
   );
   const view = new DataView(buf);
   let off = 0;
 
   // Version
-  view.setUint8(off++, 9);
+  view.setUint8(off++, 10);
 
   // Name
   const nameBytes = TEXT.encode(layout.name);
@@ -280,9 +310,32 @@ export function serializeLayout(layout: Layout): string {
   const padRaw = layout.platePadding === undefined ? 65535 : Math.round(layout.platePadding * 100);
   view.setUint16(off, padRaw, true); off += 2;
 
+  // Split (v10+).
+  view.setUint8(off++, layout.split === true ? 1 : 0);
+
+  // Pin overrides — left/main MCU (v10+).
+  view.setUint8(off++, leftPinEntries.length);
+  for (const [pin, net] of leftPinEntries) {
+    view.setUint8(off++, pin);
+    const bytes = TEXT.encode(net);
+    view.setUint8(off++, bytes.length);
+    new Uint8Array(buf, off, bytes.length).set(bytes);
+    off += bytes.length;
+  }
+
+  // Pin overrides — right MCU when split mode is on (v10+).
+  view.setUint8(off++, rightPinEntries.length);
+  for (const [pin, net] of rightPinEntries) {
+    view.setUint8(off++, pin);
+    const bytes = TEXT.encode(net);
+    view.setUint8(off++, bytes.length);
+    new Uint8Array(buf, off, bytes.length).set(bytes);
+    off += bytes.length;
+  }
+
   const raw = new Uint8Array(buf, 0, off);
   const compressed = deflateSync(raw, { level: 9 });
-  return '9' + toBase64url(compressed);
+  return 'A' + toBase64url(compressed);
 }
 
 function sidesToCode(sides: ('L' | 'R')[] | undefined): number {
@@ -305,6 +358,11 @@ function codeToSides(code: number): ('L' | 'R')[] | undefined {
 
 export function deserializeLayout(hash: string): Layout | null {
   if (!hash) return null;
+
+  // v10 binary format (adds trailing split flag + pin override maps)
+  if (hash.charAt(0) === 'A') {
+    return deserializeV10(hash.slice(1));
+  }
 
   // v9 binary format (adds trailing reversible byte + per-key sides flag)
   if (hash.charAt(0) === '9') {
@@ -1262,6 +1320,176 @@ function deserializeV9(b64: string): Layout | null {
     plates, plateCornerRadius, switchType, hotswap, stabilizers, reversible, mirrored,
     mirrorSizeUnsynced: Object.keys(mirrorSizeUnsynced).length > 0 ? mirrorSizeUnsynced : undefined,
     platePadding,
+  };
+}
+
+function deserializeV10(b64: string): Layout | null {
+  let raw: Uint8Array;
+  try {
+    raw = inflateSync(fromBase64url(b64));
+  } catch {
+    return null;
+  }
+
+  const view = new DataView(raw.buffer, raw.byteOffset, raw.byteLength);
+  let off = 0;
+
+  const version = view.getUint8(off++);
+  if (version !== 10) return null;
+
+  const nameLen = view.getUint8(off++);
+  const name = DECODE.decode(raw.subarray(off, off + nameLen));
+  off += nameLen;
+
+  const keyCount = view.getUint16(off, true); off += 2;
+  const keys: Key[] = [];
+
+  for (let i = 0; i < keyCount; i++) {
+    const x = view.getInt16(off, true) / 100; off += 2;
+    const y = view.getInt16(off, true) / 100; off += 2;
+    const flags = view.getUint8(off++);
+
+    let width = 1;
+    let height = 1;
+    let rotation = 0;
+    let sides: ('L' | 'R')[] | undefined;
+
+    if (flags & 1) { width = view.getUint16(off, true) / 100; off += 2; }
+    if (flags & 2) { height = view.getUint16(off, true) / 100; off += 2; }
+    if (flags & 4) { rotation = view.getInt16(off, true) / 10; off += 2; }
+    if (flags & 8) { sides = codeToSides(view.getUint8(off++)); }
+
+    const labelLen = view.getUint8(off++);
+    const label = DECODE.decode(raw.subarray(off, off + labelLen));
+    off += labelLen;
+
+    keys.push({ id: uuid(), x, y, width, height, rotation, label, sides });
+  }
+
+  const pairCount = view.getUint16(off, true); off += 2;
+  const mirrorPairs: Record<string, string> = {};
+  for (let i = 0; i < pairCount; i++) {
+    const iA = view.getUint16(off, true); off += 2;
+    const iB = view.getUint16(off, true); off += 2;
+    if (iA < keys.length && iB < keys.length) {
+      mirrorPairs[keys[iA].id] = keys[iB].id;
+      mirrorPairs[keys[iB].id] = keys[iA].id;
+    }
+  }
+
+  let mirrorAxisX = 0;
+  if (pairCount > 0) {
+    mirrorAxisX = view.getFloat32(off, true); off += 4;
+  }
+
+  const minGap = view.getUint16(off, true) / 100; off += 2;
+
+  const matrixOverrides: Record<string, { row: number; col: number }> = {};
+  const overrideCount = view.getUint16(off, true); off += 2;
+  for (let i = 0; i < overrideCount; i++) {
+    const idx = view.getUint16(off, true); off += 2;
+    const row = view.getUint8(off++);
+    const col = view.getUint8(off++);
+    if (idx < keys.length) {
+      matrixOverrides[keys[idx].id] = { row, col };
+    }
+  }
+
+  const alignmentGroups: { id: string; axis: 'x' | 'y'; value: number; keyIds: string[] }[] = [];
+  const groupCount = view.getUint16(off, true); off += 2;
+  for (let i = 0; i < groupCount; i++) {
+    const axisVal = view.getUint8(off++);
+    const axis: 'x' | 'y' = axisVal === 0 ? 'x' : 'y';
+    const value = view.getInt16(off, true) / 100; off += 2;
+    const memberCount = view.getUint16(off, true); off += 2;
+    const keyIds: string[] = [];
+    for (let j = 0; j < memberCount; j++) {
+      const idx = view.getUint16(off, true); off += 2;
+      if (idx < keys.length) keyIds.push(keys[idx].id);
+    }
+    if (keyIds.length >= 2) {
+      alignmentGroups.push({ id: uuid(), axis, value, keyIds });
+    }
+  }
+
+  const plates: { vertices: { x: number; y: number }[]; screws?: { x: number; y: number }[] }[] = [];
+  const plateCount = view.getUint16(off, true); off += 2;
+  for (let i = 0; i < plateCount; i++) {
+    const vertCount = view.getUint16(off, true); off += 2;
+    const vertices: { x: number; y: number }[] = [];
+    for (let j = 0; j < vertCount; j++) {
+      const x = view.getInt16(off, true) / 100; off += 2;
+      const y = view.getInt16(off, true) / 100; off += 2;
+      vertices.push({ x, y });
+    }
+    plates.push({ vertices });
+  }
+
+  const plateCornerRadius = view.getUint16(off, true) / 100; off += 2;
+
+  const switchTypeCode = view.getUint8(off++);
+  const switchType: SwitchType = SWITCH_TYPE_BY_CODE[switchTypeCode] ?? 'mx';
+
+  for (let i = 0; i < plates.length; i++) {
+    const flag = view.getUint8(off++);
+    if (flag === 1) {
+      const screwCount = view.getUint16(off, true); off += 2;
+      const screws: { x: number; y: number }[] = [];
+      for (let j = 0; j < screwCount; j++) {
+        const x = view.getInt16(off, true) / 100; off += 2;
+        const y = view.getInt16(off, true) / 100; off += 2;
+        screws.push({ x, y });
+      }
+      plates[i].screws = screws;
+    }
+  }
+
+  const hotswap = view.getUint8(off++) === 1;
+  const stabilizers = view.getUint8(off++) === 1;
+  const reversible = view.getUint8(off++) === 1;
+  const mirrored = view.getUint8(off++) === 1;
+
+  const mirrorSizeUnsynced: Record<string, true> = {};
+  const unsyncedCount = view.getUint16(off, true); off += 2;
+  for (let i = 0; i < unsyncedCount; i++) {
+    const idx = view.getUint16(off, true); off += 2;
+    if (idx >= keys.length) continue;
+    const idA = keys[idx].id;
+    const idB = mirrorPairs[idA];
+    if (!idB) continue;
+    mirrorSizeUnsynced[idA] = true;
+    mirrorSizeUnsynced[idB] = true;
+  }
+
+  const padRaw = view.getUint16(off, true); off += 2;
+  const platePadding = padRaw === 65535 ? undefined : padRaw / 100;
+
+  const split = view.getUint8(off++) === 1;
+
+  function readPinOverrides(): Record<number, string> | undefined {
+    const count = view.getUint8(off++);
+    if (count === 0) return undefined;
+    const map: Record<number, string> = {};
+    for (let i = 0; i < count; i++) {
+      const pin = view.getUint8(off++);
+      const netLen = view.getUint8(off++);
+      const net = DECODE.decode(raw.subarray(off, off + netLen));
+      off += netLen;
+      map[pin] = net;
+    }
+    return map;
+  }
+  const pinOverrides = readPinOverrides();
+  const pinOverridesRight = readPinOverrides();
+
+  return {
+    name, keys, mirrorPairs, mirrorAxisX, minGap, matrixOverrides, alignmentGroups,
+    plates, plateCornerRadius, switchType, hotswap, stabilizers, reversible, mirrored,
+    mirrorSizeUnsynced: Object.keys(mirrorSizeUnsynced).length > 0 ? mirrorSizeUnsynced : undefined,
+    platePadding,
+    split,
+    pinOverrides,
+    pinOverridesRight,
   };
 }
 

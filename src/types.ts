@@ -95,4 +95,18 @@ export interface Layout {
    * members of the pair get an entry.
    */
   mirrorSizeUnsynced?: Record<string, true>;
+  /**
+   * Split keyboard mode. When true, the layout is treated as two physically
+   * separate halves divided by `mirrorAxisX`. No key may straddle the axis
+   * (crossings are surfaced as warnings). Each half gets its own Nice!Nano
+   * controller in the PCB/schematic view, with independent matrix and pin
+   * assignments.
+   */
+  split?: boolean;
+  /**
+   * Manual Pro Micro pin overrides for the RIGHT half when split mode is
+   * on. Same shape as `pinOverrides` (which is used for the LEFT half in
+   * split mode, or the single MCU otherwise).
+   */
+  pinOverridesRight?: Record<number, string>;
 }

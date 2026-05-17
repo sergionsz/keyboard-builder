@@ -50,7 +50,7 @@ describe('URL serialize/deserialize (v2 binary)', () => {
       ],
     });
     const hash = serializeLayout(layout);
-    expect(hash.charAt(0)).toBe('9'); // v9 prefix
+    expect(hash.charAt(0)).toBe('A'); // v10 prefix
     const restored = deserializeLayout(hash);
     expect(restored).not.toBeNull();
     expect(restored!.name).toBe('My Board');
@@ -245,6 +245,32 @@ describe('URL serialize/deserialize (v2 binary)', () => {
   it('defaults stabilizers to on when the field is omitted', () => {
     const layout = makeLayout({ keys: [makeKey({ label: 'A', x: 0, y: 0 })] });
     expect(deserializeLayout(serializeLayout(layout))!.stabilizers).toBe(true);
+  });
+
+  it('round-trips the split flag and per-side pin overrides', () => {
+    const layout = makeLayout({
+      keys: [
+        makeKey({ id: 'l', label: 'L', x: 0, y: 0 }),
+        makeKey({ id: 'r', label: 'R', x: 10, y: 0 }),
+      ],
+      mirrorPairs: { l: 'r', r: 'l' },
+      mirrorAxisX: 5.5,
+      split: true,
+      pinOverrides: { 5: 'ROW0', 6: 'COL3' },
+      pinOverridesRight: { 5: 'ROW0', 7: 'COL1' },
+    });
+    const restored = deserializeLayout(serializeLayout(layout))!;
+    expect(restored.split).toBe(true);
+    expect(restored.pinOverrides).toEqual({ 5: 'ROW0', 6: 'COL3' });
+    expect(restored.pinOverridesRight).toEqual({ 5: 'ROW0', 7: 'COL1' });
+  });
+
+  it('omits pinOverrides when none are set', () => {
+    const layout = makeLayout({ keys: [makeKey({ label: 'A', x: 0, y: 0 })] });
+    const restored = deserializeLayout(serializeLayout(layout))!;
+    expect(restored.split).toBe(false);
+    expect(restored.pinOverrides).toBeUndefined();
+    expect(restored.pinOverridesRight).toBeUndefined();
   });
 
   it('generates fresh IDs on deserialize', () => {

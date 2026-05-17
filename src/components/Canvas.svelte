@@ -7,7 +7,7 @@
   import type { Key } from '../types';
   import KeyShape from './KeyShape.svelte';
   import SelectionHandles from './SelectionHandles.svelte';
-  import { editorMode, schematicFocus, matrix, matrixErrors, primaryColor, secondaryColor, pinAssignments, pinErrors, schematicVisibleKeys } from '../stores/schematic';
+  import { editorMode, schematicFocus, matrix, matrixErrors, primaryColor, secondaryColor, pinAssignments, pinErrors, schematicVisibleKeys, splitSide } from '../stores/schematic';
   import type { MatrixAssignment } from '../lib/matrix';
   import { generatePlateOutlines, filletPolygon, reversibleSourceKeys, type PlatePolygon } from '../lib/plate';
   import { PRO_MICRO_PINS } from '../lib/serialize/proMicro';
@@ -15,6 +15,7 @@
   import { resolvePlateScrewsU, isValidPlateScrewU, keyRendersOnPlate } from '../lib/exportStl';
   import { stabilizerCutoutRings } from '../lib/stabilizers';
   import { plateIssues } from '../stores/plateValidation';
+  import { splitCrossingKeyIds } from '../stores/splitValidation';
 
   // MCU visualization constants (in canvas units = U). The MCU is rendered
   // rotated 90° vs. the physical board so its long axis lies horizontally
@@ -31,7 +32,7 @@
   const MCU_USB_PROTRUDE = 0.18; // how far the connector body sticks out past the edge (U)
   const MCU_USB_INSET = 0.32;    // depth of the socket cavity into the body (U)
 
-  let schematicKeys = $derived(schematicVisibleKeys($layout));
+  let schematicKeys = $derived(schematicVisibleKeys($layout, $splitSide));
 
   // Build row and column wire paths for schematic mode
   let rowWires = $derived.by(() => {
@@ -1220,8 +1221,8 @@
   <rect width="100%" height="100%" fill="url(#grid)" />
 
   <g transform="translate({$pan.x}, {$pan.y}) scale({$zoom})">
-    <!-- Mirror axis line (only show when there are mirror pairs) -->
-    {#if Object.keys($layout.mirrorPairs).length > 0}
+    <!-- Mirror / split axis line (shown when pairs exist or split mode is on) -->
+    {#if Object.keys($layout.mirrorPairs).length > 0 || $layout.split}
       <!-- Visible axis line -->
       <line
         x1={$layout.mirrorAxisX * SCALE} y1={-10000}
@@ -1740,6 +1741,25 @@
             pointer-events="none"
           />
         {/each}
+      {/each}
+    {/if}
+
+    <!-- Split-mode warnings: outline keys that straddle the split axis. -->
+    {#if $layout.split && $splitCrossingKeyIds.length > 0}
+      {@const crossingSet = new Set($splitCrossingKeyIds)}
+      {#each $layout.keys.filter((k) => crossingSet.has(k.id)) as key (key.id)}
+        <rect
+          x={key.x * SCALE}
+          y={key.y * SCALE}
+          width={key.width * SCALE}
+          height={key.height * SCALE}
+          fill="rgba(255, 68, 68, 0.18)"
+          stroke="#ff4444"
+          stroke-width={2 / $zoom}
+          stroke-dasharray="{6 / $zoom} {3 / $zoom}"
+          transform="rotate({key.rotation} {(key.x + key.width / 2) * SCALE} {(key.y + key.height / 2) * SCALE})"
+          pointer-events="none"
+        />
       {/each}
     {/if}
 

@@ -11,7 +11,8 @@
   import { exportPng } from './lib/exportPng';
   import { exportPlateStl } from './lib/exportStl';
   import { exportShoppingList } from './lib/exportShoppingList';
-  import { matrix } from './stores/schematic';
+  import { matrix, computeMatrix } from './stores/schematic';
+  import { zipSync, strToU8 } from 'fflate';
 
   let showHelp = $state(false);
 
@@ -62,12 +63,29 @@
   }
 
   function onExportKicad() {
+    const base = $layout.name || 'layout';
+    if ($layout.split) {
+      const leftPcb = exportKicadPcb($layout, computeMatrix($layout, 'left'), { side: 'left' });
+      const rightPcb = exportKicadPcb($layout, computeMatrix($layout, 'right'), { side: 'right' });
+      const zipped = zipSync({
+        [`${base}_left.kicad_pcb`]: strToU8(leftPcb),
+        [`${base}_right.kicad_pcb`]: strToU8(rightPcb),
+      });
+      const blob = new Blob([zipped as BlobPart], { type: 'application/zip' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `${base}_kicad.zip`;
+      a.click();
+      URL.revokeObjectURL(url);
+      return;
+    }
     const pcb = exportKicadPcb($layout, $matrix);
     const blob = new Blob([pcb], { type: 'application/x-kicad-pcb' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
-    a.download = `${$layout.name || 'layout'}.kicad_pcb`;
+    a.download = `${base}.kicad_pcb`;
     a.click();
     URL.revokeObjectURL(url);
   }
